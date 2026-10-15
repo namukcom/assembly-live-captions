@@ -86,13 +86,13 @@ export function createApp({ filename = resolve(root, 'data/captions.sqlite'), so
     onFatal: () => { process.exitCode = 1; close(); },
   }) : null;
 
-  function selectedChannel(url) {
+  function selectedChannel(url, requireSource = true) {
     if (!channelManager) return { id: 'default', source, audioUrl, name: broadcast?.committee || '방송', onAir: true };
     const id = url.searchParams.get('channel');
     if (!id) throw Object.assign(Error('채널을 선택하세요.'), { status: 400 });
     const channel = channelManager.get(id);
     if (!channel) throw Object.assign(Error('채널을 찾을 수 없습니다.'), { status: 404 });
-    if (!channel.source) throw Object.assign(Error('현재 재생할 수 없는 채널입니다.'), { status: 409 });
+    if (requireSource && !channel.source) throw Object.assign(Error('현재 재생할 수 없는 채널입니다.'), { status: 409 });
     return channel;
   }
   const server = createServer(async (request, response) => {
@@ -125,11 +125,12 @@ export function createApp({ filename = resolve(root, 'data/captions.sqlite'), so
       }
       if (url.pathname === '/api/dates') { json(response, 200, { dates: store.dates() }); return; }
       if (url.pathname === '/api/captions') {
-        const channel = selectedChannel(url), day = dayParam(url), mode = modeParam(url);
+        const channel = selectedChannel(url, false), day = dayParam(url), mode = modeParam(url);
         const after = integer(url.searchParams.get('after'), 0);
         const limit = Math.max(1, integer(url.searchParams.get('limit'), 1000, 2000));
         const cursor = store.cursor();
-        const rows = store.rows({ day, mode, after, limit, source: channel.source });
+        const rows = store.rows({ day, mode, after, limit, source: channel.source,
+          channelId: channelManager ? channel.id : null, historySources: channel.historySources });
         json(response, 200, { channel: channel.id, day, mode, rows, cursor,
           next: rows.at(-1)?.id ?? after, hasMore: rows.length === limit }); return;
       }
@@ -143,7 +144,8 @@ export function createApp({ filename = resolve(root, 'data/captions.sqlite'), so
         const sub = { response, day, channelId: channel.id, source: channel.source };
         subscribers.add(sub);
         // No asynchronous gap between replaying missed records and subscribing to new ones.
-        const backlog = store.eventsAfter(since, day, channel.source);
+        const backlog = store.eventsAfter(since, day, channel.source, 5001,
+          channelManager ? channel.id : null, channel.historySources);
         if (backlog.length > 5000 || since > store.cursor()) {
           event(response, 'reset', { reason: '서버 기록을 다시 불러옵니다.' });
         } else {
@@ -157,14 +159,15 @@ export function createApp({ filename = resolve(root, 'data/captions.sqlite'), so
         return;
       }
       if (url.pathname === '/api/export') {
-        const channel = selectedChannel(url), day = dayParam(url), mode = modeParam(url);
+        const channel = selectedChannel(url, false), day = dayParam(url), mode = modeParam(url);
         if ((url.searchParams.get('format') || 'txt') !== 'txt') {
           json(response, 400, { error: 'TXT 저장만 지원합니다.' }); return;
         }
         response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
           'Content-Disposition': `attachment; filename="captions-${channel.id}-${day}.txt"`, 'Cache-Control': 'no-store' });
         await write(response, '\uFEFF');
-        for (const text of store.textRows(day, mode, channel.source)) if (!await write(response, `${text}\n\n`)) return;
+        for (const text of store.textRows(day, mode, channel.source,
+          channelManager ? channel.id : null, channel.historySources)) if (!await write(response, `${text}\n\n`)) return;
         response.end();
         return;
       }

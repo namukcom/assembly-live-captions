@@ -40,7 +40,7 @@ test('국회 생중계 목록에서 ON AIR 상태와 재생 페이지 주소를 
   assert.equal(channels[0].pageUrl, 'https://assembly.webcast.go.kr/main/service/live_play.asp?xcode=45&xcgcd=DCM45');
   assert.equal(channels[1].onAir, false);
   assert.equal(channels[1].pageUrl, 'https://assembly.webcast.go.kr/main/service/live_play.asp?xcode=12&xcgcd=DCM12');
-  assert.equal(channels.some(channel => channel.id === '33'), false, '생중계 없음 상태의 위원회는 편성 코드가 있어도 제외한다');
+  assert.equal(channels[2].id, '33', '생중계 없음 채널은 오늘 편성 채널 뒤에 배치한다');
   const loaded = await loadBroadcastList(listUrl, async () => ({ ok: true, json: async () => value }));
-  assert.equal(loaded.channels.length, 2);
+  assert.equal(loaded.channels.length, 3);
 });

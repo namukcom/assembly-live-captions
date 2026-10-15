@@ -26,9 +26,12 @@ test('ON AIR 채널 수집기를 시작하고 상태 변경 시 중지한다', a
     await manager.start();
     assert.equal(manager.get('45').onAir, true);
     assert.equal(manager.get('45').source, 'wss://smiai.webcast.go.kr:8091/aistt/haengan/hls');
+    assert.deepEqual(store.sourcesForChannel('45'), ['wss://smiai.webcast.go.kr:8091/aistt/haengan/hls']);
+    assert.equal(manager.get('33').onAir, false, '오늘 방송이 없는 채널도 목록에 유지한다');
     assert.equal(FakeSocket.instances.length, 1);
     active = false; await manager.refresh();
     assert.equal(manager.get('45').onAir, false);
+    assert.equal(manager.get('45').source, 'wss://smiai.webcast.go.kr:8091/aistt/haengan/hls');
     assert.equal(manager.collectors.size, 0); assert.equal(FakeSocket.instances[0].closed, true);
   } finally { manager.stop(); store.close(); }
 });

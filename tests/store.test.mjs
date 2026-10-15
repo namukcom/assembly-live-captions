@@ -80,6 +80,18 @@ test('위원회 채널별로 자막, 원본 이벤트와 TXT 내용을 분리한
   } finally { store.close(); }
 });
 
+test('채널 원본 주소를 기억하고 같은 원본을 쓰는 채널도 ID로 분리한다', () => {
+  const store = new CaptionStore(':memory:');
+  try {
+    store.rememberChannelSource('25', source, at);
+    store.ingest(raw(1, '법사위 자막'), source, at, '25');
+    store.ingest(raw(1, '특별위 자막'), source, at, '91');
+    assert.deepEqual(store.sourcesForChannel('25'), [source]);
+    assert.deepEqual(store.rows({ day: '2026-10-14', channelId: '25', source }).map(row => row.text), ['법사위 자막']);
+    assert.deepEqual([...store.textRows('2026-10-14', 'clean', source, '91')], ['특별위 자막']);
+  } finally { store.close(); }
+});
+
 test('기존 DB의 자막에 source 열을 추가하고 채널 값을 복구한다', () => {
   const filename = join(tmpdir(), `caption-legacy-${randomUUID()}.sqlite`);
   const legacy = new DatabaseSync(filename);

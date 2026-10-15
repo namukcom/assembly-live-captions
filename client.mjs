@@ -179,10 +179,8 @@ async function loadView() {
 
 function renderChannelOptions() {
   const fragment = document.createDocumentFragment();
-  const hasPlayable = channels.some(isPlayableChannel);
   for (const channel of channels) {
     const option = document.createElement('option'); option.value = channel.id;
-    option.disabled = hasPlayable && !isPlayableChannel(channel);
     const state = channel.onAir ? '● ON AIR' : `○ ${channel.statusText || '종료'}`;
     option.textContent = `${state} · ${channel.name}${channel.subject ? ` · ${channel.subject}` : ''}`;
     fragment.append(option);
@@ -212,11 +210,11 @@ async function refreshChannels(manual = false) {
   try {
     const data = await getJson(manual ? '/api/channels?refresh=1' : '/api/channels');
     const previousPlayable = isPlayableChannel(selectedChannel());
-    channels = data.channels.filter(channel => channel.statusText?.trim() !== '생중계 없음' && (channel.onAir || channel.pageUrl));
+    channels = [...data.channels].sort((left, right) =>
+      Number(left.statusText?.trim() === '생중계 없음') - Number(right.statusText?.trim() === '생중계 없음'));
     const playable = channels.filter(isPlayableChannel);
     const wantedId = channelId || preferredChannelId;
-    const fallback = channels.find(channel => channel.id === wantedId)?.id || channels[0]?.id || '';
-    const nextId = playable.some(channel => channel.id === wantedId) ? wantedId : playable[0]?.id || fallback;
+    const nextId = channels.find(channel => channel.id === wantedId)?.id || playable[0]?.id || channels[0]?.id || '';
     renderChannelOptions();
     const changed = nextId !== channelId;
     if (changed || !selectedChannel()) activateChannel(nextId);
@@ -237,8 +235,9 @@ async function refreshChannels(manual = false) {
     }
     const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString('ko-KR') : '방금';
     const onAirCount = channels.filter(channel => channel.onAir).length;
+    const scheduledCount = channels.filter(channel => channel.statusText?.trim() !== '생중계 없음').length;
     $('channel-refresh-status').textContent = data.lastError ? `목록 갱신 실패 · ${data.lastError}` :
-      onAirCount ? `채널 목록 ${refreshed} 갱신 · ON AIR ${onAirCount}개` : `현재 ON AIR 없음 · 오늘 편성 채널 ${channels.length}개 · ${refreshed} 갱신`;
+      onAirCount ? `채널 목록 ${refreshed} 갱신 · ON AIR ${onAirCount}개` : `현재 ON AIR 없음 · 오늘 편성 채널 ${scheduledCount}개 · ${refreshed} 갱신`;
   } catch {
     $('channel-refresh-status').textContent = '채널 목록 갱신 실패 · 다시 시도하세요.';
   } finally { if (manual) $('refresh-channels').disabled = false; }

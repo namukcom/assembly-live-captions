@@ -119,7 +119,10 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   assert.equal(nodes.channel.value, '25');
   assert.match(nodes.channel.children.find(option => option.value === '25').textContent, /○ 산회 · 법사위 · 국정감사 종료/);
   assert.match(nodes['channel-refresh-status'].textContent, /현재 ON AIR 없음 · 오늘 편성 채널 1개/);
-  assert.equal(nodes.channel.children.some(option => option.value === '33'), false, '오늘 편성이 없는 위원회는 숨긴다');
+  const noSchedule = nodes.channel.children.find(option => option.value === '33');
+  assert.ok(noSchedule, '오늘 편성이 없는 위원회도 과거 기록을 위해 보여준다');
+  assert.equal(nodes.channel.children.at(-1).value, '33', '오늘 편성이 없는 채널은 목록 아래로 정렬한다');
+  assert.notEqual(noSchedule.disabled, true, '방송이 없어도 과거 자막을 선택할 수 있다');
   assert.equal(nodes.connect.disabled, true, '종료 채널에서는 실시간 재생을 비활성화한다');
   assert.equal(streams.at(-1).closed, true, '방송 종료 상태로 바뀌면 기존 실시간 연결을 닫는다');
 });

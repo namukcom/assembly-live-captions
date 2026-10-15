@@ -73,3 +73,16 @@ test('오늘 기록, TXT 저장, JSON 제거, 잘못된 요청과 오디오 비�
   const html = await (await fetch(base)).text(); assert.ok(html.includes('color-scheme:dark'));
   const script = await fetch(`${base}/client.mjs`); assert.equal(script.status, 200);
 });
+
+test('오늘 방송이 없고 원본 주소가 없는 채널도 채널 ID로 과거 자막을 연다', async t => {
+  const app = createApp({ filename: ':memory:', collect: false,
+    liveListUrl: 'https://assembly.webcast.go.kr/main/service/live_list.asp' });
+  app.channelManager.items.set('33', { id: '33', name: '복지위', onAir: false,
+    statusText: '생중계 없음', source: null, historySources: [] });
+  app.store.ingest(raw(1, '저장된 복지위 자막'), source, at, '33');
+  const address = await app.listen(0, '127.0.0.1');
+  t.after(() => app.close());
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/captions?channel=33&date=${day}`);
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).rows.map(row => row.text), ['저장된 복지위 자막']);
+});
