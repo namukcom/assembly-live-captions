@@ -1,0 +1,10 @@
+.git
+.github
+.env
+data
+node_modules
+reference
+tests
+artifacts
+*.md
+*.zip

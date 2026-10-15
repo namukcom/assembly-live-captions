@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0c111b">
+<title>국회 생중계 자막</title>
+<style>
+*{box-sizing:border-box}
+html{color-scheme:dark;scroll-behavior:auto}
+html,body{height:100%;overflow:hidden}
+body{font:16px/1.7 system-ui,sans-serif;background:#0c111b;color:#e8edf5;margin:0}
+h1{font-size:24px;margin:0 0 12px}
+input,button,select{font:inherit;padding:9px 12px;border:1px solid #354259;border-radius:8px;background:#192436;color:#e8edf5}
+input,select{max-width:100%;min-width:0}
+button{cursor:pointer;touch-action:manipulation}
+button.primary{background:#57d7b2;color:#09241c;border-color:#57d7b2}
+button:hover{filter:brightness(1.12)}button:disabled{opacity:.55;cursor:wait}
+:focus-visible{outline:3px solid #79e9c8;outline-offset:2px}
+.controls{position:fixed;z-index:10;left:0;right:0;bottom:0;max-height:50vh;max-height:50dvh;overflow:auto;overscroll-behavior:contain;padding:12px max(16px,env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));background:#111a28;border-top:1px solid #2b374c;box-shadow:0 -6px 24px #0003}
+.controls-inner{max-width:1160px;margin:auto;display:grid;gap:10px;min-width:0}
+.toolbar-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center}
+.playback-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}
+.playback-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;min-height:58px;padding:7px 10px 7px 12px;border:1px solid #2b374c;border-radius:11px;background:#192436;cursor:pointer}
+.playback-copy{display:flex;flex-direction:column;min-width:0;line-height:1.35}.playback-copy strong{font-size:14px}.playback-copy small{font-size:11px;color:#a9b8cb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.switch-control{position:relative;display:flex;flex:0 0 auto}
+.ios-toggle{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.switch-track{position:relative;width:51px;height:31px;border-radius:999px;background:#455268;box-shadow:inset 0 0 0 1px #617089;transition:background .18s;flex:0 0 auto}
+.switch-track::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;box-shadow:0 2px 5px #0008;transition:transform .18s}
+.ios-toggle:checked+.switch-track{background:#30d158;box-shadow:none}
+.ios-toggle:checked+.switch-track::after{transform:translateX(20px)}
+.ios-toggle:focus-visible+.switch-track{outline:3px solid #79e9c8;outline-offset:3px}
+.ios-toggle:disabled+.switch-track{opacity:.45}.playback-row:has(.ios-toggle:disabled){cursor:wait;opacity:.65}
+#txt{min-height:44px;white-space:nowrap}
+.toolbar-settings{display:grid;grid-template-columns:190px 155px 200px minmax(220px,1fr);gap:12px;align-items:end}
+.control-field{display:block;font-size:14px;min-width:0}
+.control-field select,.control-field input[type=search],.control-field input[type=date]{display:block;width:100%;margin-top:4px;font-size:16px;min-height:44px}
+.follow-controls{display:flex;flex-direction:column}
+.check-field{display:flex;gap:8px;align-items:center;min-height:32px;cursor:pointer;font-size:14px}
+input[type=checkbox]{accent-color:#57d7b2;flex-shrink:0}
+#screen-status,#channel-refresh-status{font-size:12px;overflow-wrap:anywhere;line-height:1.5;color:#a9b8cb}
+#rows{background:#131c2a;border-radius:12px;margin-top:18px;overflow-anchor:none}
+article{padding:12px 24px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:20px;line-height:1.9;color:#e8edf5}
+article:first-child{padding-top:24px}article:last-child{padding-bottom:24px}
+.source-settings{font-size:13px;color:#a9b8cb;margin-bottom:12px}.source-settings summary{cursor:pointer;min-height:32px}
+.source-settings input{width:100%;font-size:16px;margin-top:4px}.source-settings label{display:block;margin-top:12px}
+.note{font-size:14px;color:#a9b8cb}
+#count{font-size:12px;color:#9dacbf}
+.top-panel{position:fixed;z-index:20;left:0;right:0;top:0;padding:12px max(16px,env(safe-area-inset-right,0px)) 12px max(16px,env(safe-area-inset-left,0px));background:#0c111b;border-bottom:1px solid #2b374c;box-shadow:0 6px 24px #0003}
+.top-inner{max-width:1160px;margin:auto}
+.top-panel h1{font-size:20px;margin:0 0 8px}
+.channel-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:end;padding:12px;background:#111a28;border:1px solid #2b374c;border-radius:12px}
+.channel-bar label{min-width:0;font-size:14px;font-weight:700}.channel-bar select{display:block;width:100%;min-height:46px;margin-top:5px;font-size:16px}
+.channel-bar button{min-height:46px;white-space:nowrap}.channel-bar #refresh-channels{display:grid;place-items:center;width:46px;padding:0;font-size:25px;line-height:1}.channel-bar #refresh-channels:disabled .refresh-icon{animation:refresh-spin .8s linear infinite}.channel-bar #channel-refresh-status{grid-column:1/-1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@keyframes refresh-spin{to{transform:rotate(360deg)}}
+#caption-scroller{position:fixed;z-index:1;left:0;right:0;top:var(--header-height,170px);bottom:var(--toolbar-height,230px);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;outline:none}
+.caption-inner{max-width:960px;margin:auto;padding:20px 24px 28px}
+@media(max-width:850px){
+  html{--toolbar-height:340px}
+  .toolbar-top{grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .playback-row{min-height:54px;padding:5px 8px}
+  .playback-copy strong{font-size:13px}.playback-copy small{max-width:120px}
+  .toolbar-settings{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+  .follow-controls{grid-column:1/-1;flex-direction:row;flex-wrap:wrap;gap:0 20px}
+  .check-field{min-height:40px}
+  .search-field{grid-column:1/-1}
+  .field-caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  .control-field select,.control-field input[type=search],.control-field input[type=date]{margin-top:0}
+  .top-panel,.controls{transition:transform .22s ease,opacity .18s ease}
+  #caption-scroller{transition:top .22s ease,bottom .22s ease}
+  body.chrome-hidden .top-panel{transform:translateY(-100%);opacity:0;pointer-events:none}
+  body.chrome-hidden .controls{transform:translateY(100%);opacity:0;pointer-events:none}
+  body.chrome-hidden #caption-scroller{top:0;bottom:0}
+}
+@media(max-width:480px){
+  .top-panel{padding:8px 12px}.top-panel h1{font-size:18px;margin-bottom:6px}.channel-bar{padding:9px}
+  .caption-inner{padding:12px}
+  article{font-size:18px;padding:10px 16px}
+  .controls{padding-left:12px;padding-right:12px}
+  .playback-settings{gap:6px}.playback-row{gap:6px}.playback-copy small{max-width:74px}.switch-track{width:44px;height:26px}.switch-track::after{width:22px;height:22px}.ios-toggle:checked+.switch-track::after{transform:translateX(18px)}
+  #txt{font-size:13px;padding-left:8px;padding-right:8px}
+  .check-field{font-size:13px}
+}
+</style>
+</head>
+<body>
+<header class="top-panel">
+<div class="top-inner">
+  <h1>국회 생중계 자막</h1>
+  <section class="channel-bar" aria-label="위원회 채널 선택">
+    <label>위원회 채널<select id="channel" aria-label="위원회 채널"></select></label>
+    <button id="refresh-channels" aria-label="채널 새로고침" title="채널 새로고침"><span class="refresh-icon" aria-hidden="true">↻</span></button>
+    <span id="channel-refresh-status" class="note" role="status" aria-live="polite">채널 목록 확인 중</span>
+  </section>
+</div>
+</header>
+<main id="caption-scroller" tabindex="0">
+<div class="caption-inner">
+<details id="source-settings" class="source-settings">
+  <summary>연결 정보 및 이용 안내</summary>
+  <p class="note">서버가 ON AIR 위원회별 자막을 계속 수집합니다. 접속하면 선택한 채널과 날짜의 저장 기록을 먼저 불러오고, 오늘 날짜에서는 새 자막을 이어서 표시합니다. 자막 재생 스위치는 이 화면의 수신만 제어하며 서버 수집은 계속됩니다. 서버 수집을 시작하기 전 자막은 제공되지 않습니다.</p>
+  <p class="note">오디오는 이 브라우저가 원본 방송 주소에 직접 연결합니다. 서버는 오디오를 수집하거나 전달하지 않습니다. 오디오 재생은 한 번 눌러 시작하세요. 잠금 화면 제어를 지원하지만 백그라운드 재생은 브라우저와 휴대폰 설정에 따라 달라질 수 있습니다.</p>
+  <p class="note">방송 중인 위원회 목록은 국회 생중계 목록에서 주기적으로 갱신합니다. 채널을 고르면 해당 위원회의 자막과 오디오로 전환됩니다. 화면 켜두기는 HTTPS와 지원하는 브라우저에서 동작합니다.</p>
+  <label>서버의 자막 수집 주소 <input id="source-url" readonly aria-label="서버 자막 수집 주소"></label>
+  <label>방송 오디오 주소 <input id="audio-url" type="url"></label>
+</details>
+<div id="count" aria-live="polite"></div>
+<section id="rows" aria-label="자막"></section>
+</div>
+</main>
+<audio id="broadcast-audio" preload="none"></audio>
+<aside class="controls" aria-label="자막 도구">
+<div class="controls-inner">
+  <div class="toolbar-top">
+    <div class="playback-settings" aria-label="재생 설정">
+      <label class="playback-row">
+        <span class="playback-copy"><strong>자막 재생</strong><small id="status" role="status" aria-live="polite">저장된 자막 불러오는 중</small></span>
+        <span class="switch-control"><input id="connect" class="ios-toggle" type="checkbox" role="switch" checked aria-label="자막 재생"><span class="switch-track" aria-hidden="true"></span></span>
+      </label>
+      <label class="playback-row">
+        <span class="playback-copy"><strong>오디오 듣기</strong><small id="audio-status" role="status" aria-live="polite">오디오 대기</small></span>
+        <span class="switch-control"><input id="audio-toggle" class="ios-toggle" type="checkbox" role="switch" aria-label="오디오 듣기"><span class="switch-track" aria-hidden="true"></span></span>
+      </label>
+    </div>
+    <button id="txt">TXT 다운로드</button>
+  </div>
+  <div class="toolbar-settings">
+    <div class="follow-controls">
+      <label class="check-field"><input id="follow" type="checkbox" checked> 새 자막 따라가기</label>
+      <label class="check-field"><input id="keep-screen" type="checkbox" checked> 화면 켜두기</label>
+      <span id="screen-status">화면 유지 확인 중</span>
+    </div>
+    <label class="control-field"><span class="field-caption">기록 날짜</span><input id="date" type="date"></label>
+    <label class="control-field"><span class="field-caption">표시 방식</span><select id="mode"><option value="clean">실시간 · 문장별 최신본</option><option value="final">완성된 자막만</option><option value="raw">수신 메시지 전체</option></select></label>
+    <label class="control-field search-field"><span class="field-caption">자막 검색</span><input id="search" type="search" placeholder="자막 검색"></label>
+  </div>
+</div>
+</aside>
+<script type="module" src="./client.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "assembly-live-captions",
+  "version": "1.0.0",
+  "description": "국회 위원회 생중계 자막 수집·조회 및 오디오 재생 웹 서비스",
+  "homepage": "https://soju.day",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/namukcom/assembly-live-captions.git"
+  },
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": { "start": "node server.mjs", "test": "node --test" }
+}

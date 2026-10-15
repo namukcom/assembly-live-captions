@@ -1,0 +1,115 @@
+name: Test and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assembly-live-captions-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run tests
+        run: node --test
+
+      - name: Build Docker image
+        run: docker build --tag assembly-live-captions:${{ github.sha }} .
+
+  deploy:
+    name: Deploy to soju.day
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://soju.day
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::GitHub secret ${name} is required"
+              exit 1
+            fi
+          done
+          echo "DEPLOY_PORT=${DEPLOY_PORT:-22}" >> "$GITHUB_ENV"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy exact commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -i "$HOME/.ssh/deploy_key" -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_SHA='$GITHUB_SHA' bash -se" <<'REMOTE'
+          set -euo pipefail
+          APP_DIR=/opt/caption
+          SERVICE=assembly-live-captions
+
+          cd "$APP_DIR"
+          if [ ! -d .git ]; then
+            echo "$APP_DIR is not a Git checkout" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "$APP_DIR has tracked local changes; deployment stopped" >&2
+            exit 1
+          fi
+
+          previous_sha=$(git rev-parse HEAD)
+          git fetch --prune origin main
+          git checkout main
+          git merge --ff-only "$DEPLOY_SHA"
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+
+          docker compose up -d --build --remove-orphans
+          healthy=0
+          for attempt in $(seq 1 20); do
+            if docker compose exec -T "$SERVICE" node -e \
+              "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"; then
+              healthy=1
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$healthy" -ne 1 ]; then
+            docker compose logs --tail=100 "$SERVICE" || true
+            echo "Health check failed; rolling back to $previous_sha" >&2
+            git reset --hard "$previous_sha"
+            docker compose up -d --build --remove-orphans
+            exit 1
+          fi
+
+          docker compose ps
+          REMOTE

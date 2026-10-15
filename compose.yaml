@@ -1,0 +1,38 @@
+services:
+  assembly-live-captions:
+    build: .
+    container_name: assembly-live-captions
+    ports:
+      - "${CAPTION_PORT:-3000}:3000"
+    environment:
+      BROADCAST_LIST_URL: "${BROADCAST_LIST_URL:-https://assembly.webcast.go.kr/main/service/live_list.asp}"
+      CHANNEL_REFRESH_MS: "${CHANNEL_REFRESH_MS:-30000}"
+      DATA_FILE: /data/captions.sqlite
+    volumes:
+      - caption-data:/data
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  caption-data:
+
+networks:
+  default:
+    external: true
+    name: proxy
