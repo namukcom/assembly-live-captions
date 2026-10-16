@@ -3,7 +3,7 @@ export function initAudio($) {
   const audio = $('broadcast-audio');
   const storageKey = 'assembly-caption-audio-enabled';
   let player = null, library = null, ready = false, warming = false, wanted = false, attempt = 0, preparedSource = '', sourceVersion = 0;
-  let enabled = false;
+  let enabled = false, reloadManifest = false;
   try { enabled = window.localStorage?.getItem(storageKey) === 'true'; } catch {}
 
   function savePreference() {
@@ -16,8 +16,14 @@ export function initAudio($) {
   function mediaState(state) {
     if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = state; } catch {} }
   }
+  function stopLoading() {
+    if (!player) return;
+    // stopLoad aborts an in-flight initial manifest; startLoad alone cannot restart it.
+    if (!player.levels.length) reloadManifest = true;
+    player.stopLoad();
+  }
   function stopPlayback(message = '오디오 일시정지') {
-    attempt++; wanted = false; audio.pause(); player?.stopLoad(); ui(message); mediaState('paused');
+    attempt++; wanted = false; audio.pause(); stopLoading(); ui(message); mediaState('paused');
   }
   function turnOff(message = '오디오 일시정지') {
     enabled = false; savePreference(); stopPlayback(message);
@@ -46,7 +52,7 @@ export function initAudio($) {
       if (!$('audio-url').value.trim()) { ui('방송 채널을 선택하세요.'); return; }
       const source = new URL($('audio-url').value.trim());
       if (source.protocol !== 'https:') throw Error('오디오 주소는 HTTPS 주소를 입력하세요.');
-      player?.destroy(); player = null; audio.removeAttribute('src'); audio.load();
+      player?.destroy(); player = null; reloadManifest = false; audio.removeAttribute('src'); audio.load();
       const native = audio.canPlayType('application/vnd.apple.mpegurl') || audio.canPlayType('application/x-mpegURL');
       const safari = /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|Android/.test(navigator.userAgent);
       if (safari && native) {
@@ -91,6 +97,10 @@ export function initAudio($) {
     if (!ready) { await warm(); if (!ready || !enabled || wanted) return; }
     const token = ++attempt; wanted = true; ui('오디오 연결 중');
     try {
+      if (player && reloadManifest) {
+        reloadManifest = false;
+        player.loadSource(preparedSource);
+      }
       player?.startLoad();
       if (audio.seekable.length) {
         const last = audio.seekable.length - 1;
@@ -105,9 +115,10 @@ export function initAudio($) {
       if (token === attempt && wanted) { ui('오디오 재생 중'); mediaState('playing'); }
     } catch (error) {
       if (token !== attempt) return;
-      wanted = false; player?.stopLoad(); mediaState('paused');
+      // Preserve the saved preference, but show that this page still needs a user gesture.
+      wanted = false; enabled = false; stopLoading(); mediaState('paused');
       if (error.name !== 'NotAllowedError') ready = false;
-      ui(error.name === 'NotAllowedError' ? '자동 재생 차단됨 · 스위치를 껐다가 다시 켜세요.' : '오디오 재생 실패 · 다시 시도하세요.');
+      ui(error.name === 'NotAllowedError' ? '자동 재생 차단됨 · 오디오 스위치를 켜세요.' : '오디오 재생 실패 · 다시 시도하세요.');
     }
   }
 
@@ -118,8 +129,8 @@ export function initAudio($) {
     ui('오디오 재생 중'); mediaState('playing');
   });
   audio.addEventListener('pause', () => {
-    if (warming || !audio.paused) return;
-    wanted = false; player?.stopLoad(); ui('오디오 일시정지'); mediaState('paused');
+    if (warming || !audio.paused || !wanted) return;
+    attempt++; wanted = false; stopLoading(); ui('오디오 일시정지'); mediaState('paused');
   });
   audio.addEventListener('waiting', () => { if (wanted) ui('오디오 버퍼링 중'); });
   audio.addEventListener('ended', () => stopPlayback('방송 오디오 종료'));
