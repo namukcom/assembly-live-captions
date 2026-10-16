@@ -99,15 +99,6 @@ test('오늘 방송이 없고 원본 주소가 없는 채널도 채널 ID로 과
   assert.equal(listCalls, 1, '연속 수동 새로고침 요청은 쿨다운 동안 한 번만 외부 목록을 호출한다');
 });
 
-test('동시 SSE 구독자 한도를 초과하면 503을 반환한다', async t => {
-  const { base } = await start(t, { maxSubscribers: 1 });
-  const first = await sse(base, 0);
-  t.after(() => first.close());
-  await first.next('status');
-  const second = await fetch(`${base}/api/events?date=${day}&since=0`);
-  assert.equal(second.status, 503);
-});
-
 test('GA는 ID가 없으면 삽입하지 않고 설정한 운영 도메인에서만 실행한다', async t => {
   const disabled = await start(t);
   const enabled = await start(t, { gaMeasurementId: 'G-59FNBCPP6F', gaHostname: 'captions.example.test' });

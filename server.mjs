@@ -70,7 +70,7 @@ async function write(response, chunk) {
 
 export function createApp({ filename = resolve(root, 'data/captions.sqlite'), source = defaultSource,
   audioUrl = defaultAudio, pageUrl = null, broadcast = null, liveListUrl = null,
-  channelRefreshMs = 30000, manualRefreshCooldownMs = 5000, maxSubscribers = 500,
+  channelRefreshMs = 30000, manualRefreshCooldownMs = 5000,
   fetchImpl, collect = true, WebSocketClass,
   gaMeasurementId = '', gaHostname = 'soju.day' } = {}) {
   gaMeasurementId = gaMeasurementId.trim();
@@ -103,7 +103,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
       if (assetName === 'captions.html' && analyticsTag) {
         content = Buffer.from(content.toString('utf8').replace('<head>', `<head>${analyticsTag}`));
       }
-      const etag = `"${createHash('sha256').update(content).digest('base64url').slice(0, 27)}"`;
+      const etag = `W/"${createHash('sha256').update(content).digest('base64url').slice(0, 27)}"`;
       cached = { content, contentType, etag };
       assetCache.set(assetName, cached);
     }
@@ -210,9 +210,6 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
       if (url.pathname === '/api/events') {
         const channel = selectedChannel(url), day = dayParam(url);
         const since = integer(request.headers['last-event-id'] ?? url.searchParams.get('since'), store.cursor());
-        if (subscribers.size >= maxSubscribers) {
-          json(response, 503, { error: '동시 접속 한도를 초과했습니다. 잠시 후 다시 시도하세요.' }); return;
-        }
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
         if (request.method === 'HEAD') { response.end(); return; }
