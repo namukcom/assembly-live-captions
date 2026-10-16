@@ -1,4 +1,5 @@
 import { initAudio } from './audio.mjs';
+import { seoulSlot } from './lib/caption-format.mjs';
 
 const $ = id => document.getElementById(id);
 const channelStorageKey = 'assembly-caption-channel';
@@ -94,7 +95,16 @@ function render() {
     const rows = visibleRows().filter(row => !query || row.text.toLowerCase().includes(query));
     matchCount = rows.length;
     const fragment = document.createDocumentFragment();
+    let prevSlot = null;
     for (const row of rows) {
+      const slot = query ? null : seoulSlot(row.at);
+      if (slot && prevSlot && slot !== prevSlot) {
+        const divider = document.createElement('p');
+        divider.className = 'time-divider';
+        divider.textContent = `─── ${slot} ───`;
+        fragment.append(divider);
+      }
+      if (slot) prevSlot = slot;
       let article = $('mode').value === 'raw' ? null : articles.get(row.id);
       if (!article) {
         article = document.createElement('article');

@@ -67,16 +67,17 @@ test('한국 날짜 경계와 날짜 유효성을 확인한다', () => {
   assert.equal(isDay('2026-10-14'), true);
 });
 
-test('위원회 채널별로 자막, 원본 이벤트와 TXT 내용을 분리한다', () => {
+test('위원회 채널별로 자막, 원본 이벤트와 TXT 내용을 분리하고 10분 단위 타임스탬프를 표시한다', () => {
   const store = new CaptionStore(':memory:');
   try {
     const other = 'wss://example.test/other';
     store.ingest(raw(1, '첫 채널'), source, at);
     store.ingest(raw(1, '다른 채널'), other, at);
+    store.ingest(raw(2, '10분 뒤 문장'), other, '2026-10-14T08:10:05.000Z');
     assert.deepEqual(store.rows({ day: '2026-10-14', source }).map(row => row.text), ['첫 채널']);
-    assert.deepEqual(store.rows({ day: '2026-10-14', source: other }).map(row => row.text), ['다른 채널']);
+    assert.deepEqual(store.rows({ day: '2026-10-14', source: other }).map(row => row.text), ['다른 채널', '10분 뒤 문장']);
     assert.equal(store.eventsAfter(0, '2026-10-14', source).length, 1);
-    assert.deepEqual([...store.textRows('2026-10-14', 'clean', other)], ['다른 채널']);
+    assert.deepEqual([...store.textRows('2026-10-14', 'clean', other)], ['다른 채널', '─── 17:10 ───', '10분 뒤 문장']);
   } finally { store.close(); }
 });
 
