@@ -26,6 +26,8 @@ test('허용된 국회 페이지를 JSON으로 불러오고 잘못된 원본 주
   assert.equal(config.broadcast.subject, response.xsubj);
   await assert.rejects(() => loadBroadcastPage('https://example.com/live.json'), /assembly\.webcast\.go\.kr/);
   assert.throws(() => parseBroadcastPage({ ...response, xsami: 'http://invalid.test' }, pageUrl), /wss:/);
+  assert.throws(() => parseBroadcastPage({ ...response, xsami: 'wss://evil.test/aistt' }, pageUrl), /호스트가 허용되지 않습니다/);
+  assert.throws(() => parseBroadcastPage({ ...response, xhls: [{ '240p': 'https://evil.test/live.m3u8' }] }, pageUrl), /호스트가 허용되지 않습니다/);
 });
 
 test('국회 생중계 목록에서 ON AIR 상태와 재생 페이지 주소를 만든다', async () => {

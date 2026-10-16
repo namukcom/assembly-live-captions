@@ -71,21 +71,41 @@ test('오늘 기록, TXT 저장, JSON 제거, 잘못된 요청과 오디오 비�
   assert.equal((await fetch(`${base}/api/captions?limit=9999`)).status, 400);
   assert.equal((await fetch(`${base}/api/audio`)).status, 404);
   assert.equal((await fetch(`${base}/data/captions.sqlite`)).status, 404);
-  const html = await (await fetch(base)).text(); assert.ok(html.includes('color-scheme:dark'));
+  const htmlRes = await fetch(base);
+  const html = await htmlRes.text(); assert.ok(html.includes('color-scheme:dark'));
+  assert.equal(htmlRes.headers.get('x-frame-options'), 'DENY');
+  assert.ok(htmlRes.headers.get('etag'));
+  const cachedRes = await fetch(base, { headers: { 'If-None-Match': htmlRes.headers.get('etag') } });
+  assert.equal(cachedRes.status, 304);
   const script = await fetch(`${base}/client.mjs`); assert.equal(script.status, 200);
 });
 
 test('오늘 방송이 없고 원본 주소가 없는 채널도 채널 ID로 과거 자막을 연다', async t => {
+  let listCalls = 0;
   const app = createApp({ filename: ':memory:', collect: false,
-    liveListUrl: 'https://assembly.webcast.go.kr/main/service/live_list.asp' });
+    liveListUrl: 'https://assembly.webcast.go.kr/main/service/live_list.asp',
+    fetchImpl: async () => { listCalls++; return { ok: true, json: async () => ({ xlist: [] }) }; } });
   app.channelManager.items.set('33', { id: '33', name: '복지위', onAir: false,
     statusText: '생중계 없음', source: null, historySources: [] });
   app.store.ingest(raw(1, '저장된 복지위 자막'), source, at, '33');
   const address = await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
-  const response = await fetch(`http://127.0.0.1:${address.port}/api/captions?channel=33&date=${day}`);
+  const base = `http://127.0.0.1:${address.port}`;
+  const response = await fetch(`${base}/api/captions?channel=33&date=${day}`);
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).rows.map(row => row.text), ['저장된 복지위 자막']);
+  await fetch(`${base}/api/channels?refresh=1`);
+  await fetch(`${base}/api/channels?refresh=1`);
+  assert.equal(listCalls, 1, '연속 수동 새로고침 요청은 쿨다운 동안 한 번만 외부 목록을 호출한다');
+});
+
+test('동시 SSE 구독자 한도를 초과하면 503을 반환한다', async t => {
+  const { base } = await start(t, { maxSubscribers: 1 });
+  const first = await sse(base, 0);
+  t.after(() => first.close());
+  await first.next('status');
+  const second = await fetch(`${base}/api/events?date=${day}&since=0`);
+  assert.equal(second.status, 503);
 });
 
 test('GA는 ID가 없으면 삽입하지 않고 설정한 운영 도메인에서만 실행한다', async t => {

@@ -36,6 +36,8 @@ export function initAudio($) {
     if (!library) library = new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js';
+      script.integrity = 'sha384-cciJ0zi8d1uMKC2zJd7jvPY4HQt7W4ByUI/FlMkltvBi31aW61rcpVBhpmW8/NwX';
+      script.crossOrigin = 'anonymous';
       script.onload = () => window.Hls ? resolve(window.Hls) : reject(Error('재생기 로드 실패'));
       script.onerror = () => { script.remove(); reject(Error('오디오 재생기 로드 실패 · 인터넷 연결 확인')); };
       document.head.append(script);

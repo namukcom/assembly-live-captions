@@ -4,7 +4,8 @@ const $ = id => document.getElementById(id);
 const channelStorageKey = 'assembly-caption-channel';
 let config, audioController, stream, loadAbort, generation = 0, wantsLive = true, loading = false;
 let cursor = 0, collectorState = 'connecting', followFrame = null, renderFrame = null;
-let captions = new Map(), records = new Map(), channels = [], channelId = '', preferredChannelId = '', viewDay = '';
+let captions = new Map(), records = new Map(), articles = new Map(), dirtyStructure = true;
+let channels = [], channelId = '', preferredChannelId = '', viewDay = '';
 let chromeTimer = null;
 const compactScreen = window.matchMedia?.('(max-width: 850px)');
 
@@ -76,33 +77,45 @@ function followLatest() {
 }
 
 function cleanRows(mode = $('mode').value) {
-  const rows = [...captions.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const rows = [...captions.values()].sort((a, b) => (a._time ?? Date.parse(a.at)) - (b._time ?? Date.parse(b.at)));
   return mode === 'final' ? rows.filter(row => row.final !== false) : rows;
 }
 
 function visibleRows() {
   if ($('mode').value !== 'raw') return cleanRows();
-  return [...records.values()].filter(row => row.text.trim()).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return [...records.values()].filter(row => row.text.trim())
+    .sort((a, b) => (a._time ?? Date.parse(a.at)) - (b._time ?? Date.parse(b.at)));
 }
 
 function render() {
   const query = $('search').value.trim().toLowerCase();
-  const rows = visibleRows().filter(row => !query || row.text.toLowerCase().includes(query));
-  const fragment = document.createDocumentFragment();
-  for (const row of rows) {
-    const article = document.createElement('article'); article.textContent = row.text; fragment.append(article);
+  let matchCount = captions.size;
+  if (dirtyStructure || query || $('mode').value === 'raw') {
+    const rows = visibleRows().filter(row => !query || row.text.toLowerCase().includes(query));
+    matchCount = rows.length;
+    const fragment = document.createDocumentFragment();
+    for (const row of rows) {
+      let article = $('mode').value === 'raw' ? null : articles.get(row.id);
+      if (!article) {
+        article = document.createElement('article');
+        if ($('mode').value !== 'raw') articles.set(row.id, article);
+      }
+      article.textContent = row.text;
+      fragment.append(article);
+    }
+    if (!rows.length) {
+      const paragraph = document.createElement('p'); paragraph.className = 'note'; paragraph.style.padding = '20px';
+      paragraph.textContent = loading ? '저장된 자막을 불러오고 있습니다.' : query ? '검색 결과가 없습니다.' :
+        !selectedChannel() ? '오늘 표시할 위원회가 없습니다.' :
+        $('mode').value === 'final' ? '완성된 자막이 아직 없습니다.' : '이 채널에 저장된 자막이 아직 없습니다.';
+      fragment.append(paragraph);
+    }
+    $('rows').replaceChildren(fragment);
+    dirtyStructure = Boolean(query || $('mode').value === 'raw' || !rows.length);
   }
-  if (!rows.length) {
-    const paragraph = document.createElement('p'); paragraph.className = 'note'; paragraph.style.padding = '20px';
-    paragraph.textContent = loading ? '저장된 자막을 불러오고 있습니다.' : query ? '검색 결과가 없습니다.' :
-      !selectedChannel() ? '오늘 표시할 위원회가 없습니다.' :
-      $('mode').value === 'final' ? '완성된 자막이 아직 없습니다.' : '이 채널에 저장된 자막이 아직 없습니다.';
-    fragment.append(paragraph);
-  }
-  $('rows').replaceChildren(fragment);
   const channel = selectedChannel();
   const day = viewDay || $('date').value;
-  $('count').textContent = channel ? `${day} · ${channel.name} · ${cleanRows('clean').length}개 자막${query ? ` · 검색 ${rows.length}개` : ''}` : 'ON AIR 채널 없음';
+  $('count').textContent = channel ? `${day} · ${channel.name} · ${captions.size}개 자막${query ? ` · 검색 ${matchCount}개` : ''}` : 'ON AIR 채널 없음';
   followLatest();
 }
 
@@ -114,12 +127,20 @@ function scheduleRender() {
 function applyCaption(row) {
   if (!row || (viewDay && row.day !== viewDay)) return;
   const old = captions.get(row.id);
-  if (!old || old.revision <= row.revision) captions.set(row.id, row);
+  if (!old || old.revision <= row.revision) {
+    row._time = old?._time ?? Date.parse(row.at);
+    captions.set(row.id, row);
+    if (!old || (old.final !== false) !== (row.final !== false)) dirtyStructure = true;
+    const article = articles.get(row.id);
+    if (article) article.textContent = row.text;
+  }
 }
 
 function applyRecord(row) {
   if (!row || (viewDay && row.day !== viewDay)) return;
+  row._time = Date.parse(row.at);
   records.set(row.id, row);
+  dirtyStructure = true;
 }
 
 async function getJson(url, options) {
@@ -155,7 +176,7 @@ async function loadView() {
   keepChromeVisible();
   const token = ++generation;
   stream?.close(); stream = null; loadAbort?.abort(); loadAbort = new AbortController();
-  captions = new Map(); records = new Map(); cursor = 0;
+  captions = new Map(); records = new Map(); articles = new Map(); dirtyStructure = true; cursor = 0;
   if (!channelId) { loading = false; updateStatus(); render(); return; }
   loading = true; updateStatus(); render();
   try {
@@ -269,9 +290,10 @@ $('date').onchange = () => {
 let previousMode = $('mode').value;
 $('mode').onchange = () => {
   const rawChanged = previousMode === 'raw' || $('mode').value === 'raw'; previousMode = $('mode').value;
+  dirtyStructure = true;
   if (rawChanged) loadView(); else render();
 };
-$('search').oninput = scheduleRender;
+$('search').oninput = () => { dirtyStructure = true; scheduleRender(); };
 $('follow').onchange = followLatest;
 $('txt').onclick = () => {
   if (!channelId) return;

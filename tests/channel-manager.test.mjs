@@ -19,8 +19,11 @@ const detail = { xsami: 'wss://smiai.webcast.go.kr:8091/aistt/haengan',
 
 test('ON AIR 채널 수집기를 시작하고 상태 변경 시 중지한다', async () => {
   FakeSocket.instances = [];
-  const store = new CaptionStore(':memory:'); let active = true;
-  const fetchImpl = async url => ({ ok: true, json: async () => url.pathname.endsWith('live_list.asp') ? list(active) : detail });
+  const store = new CaptionStore(':memory:'); let active = true, detailCalls = 0;
+  const fetchImpl = async url => {
+    if (!url.pathname.endsWith('live_list.asp')) detailCalls++;
+    return { ok: true, json: async () => url.pathname.endsWith('live_list.asp') ? list(active) : detail };
+  };
   const manager = new ChannelManager({ store, fetchImpl, WebSocketClass: FakeSocket, refreshMs: 60000 });
   try {
     await manager.start();
@@ -29,6 +32,10 @@ test('ON AIR 채널 수집기를 시작하고 상태 변경 시 중지한다', a
     assert.deepEqual(store.sourcesForChannel('45'), ['wss://smiai.webcast.go.kr:8091/aistt/haengan/hls']);
     assert.equal(manager.get('33').onAir, false, '오늘 방송이 없는 채널도 목록에 유지한다');
     assert.equal(FakeSocket.instances.length, 1);
+    assert.equal(detailCalls, 1);
+    FakeSocket.instances[0].dispatchEvent(new Event('open'));
+    await manager.refresh();
+    assert.equal(detailCalls, 1, '이미 연결된 동일 편성 채널은 상세 페이지를 중복 조회하지 않는다');
     active = false; await manager.refresh();
     assert.equal(manager.get('45').onAir, false);
     assert.equal(manager.get('45').source, 'wss://smiai.webcast.go.kr:8091/aistt/haengan/hls');

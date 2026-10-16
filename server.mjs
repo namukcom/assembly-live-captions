@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
@@ -41,7 +42,11 @@ function modeParam(url) {
 }
 
 function json(response, status, value) {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
   response.end(JSON.stringify(value));
 }
 
@@ -65,7 +70,8 @@ async function write(response, chunk) {
 
 export function createApp({ filename = resolve(root, 'data/captions.sqlite'), source = defaultSource,
   audioUrl = defaultAudio, pageUrl = null, broadcast = null, liveListUrl = null,
-  channelRefreshMs = 30000, fetchImpl, collect = true, WebSocketClass,
+  channelRefreshMs = 30000, manualRefreshCooldownMs = 5000, maxSubscribers = 500,
+  fetchImpl, collect = true, WebSocketClass,
   gaMeasurementId = '', gaHostname = 'soju.day' } = {}) {
   gaMeasurementId = gaMeasurementId.trim();
   gaHostname = gaHostname.trim().toLowerCase();
@@ -89,8 +95,33 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
   document.head.appendChild(script);
 }
 </script>` : '';
+  const assetCache = new Map();
+  async function getAsset(assetName, contentType) {
+    let cached = assetCache.get(assetName);
+    if (!cached) {
+      let content = await readFile(resolve(root, assetName));
+      if (assetName === 'captions.html' && analyticsTag) {
+        content = Buffer.from(content.toString('utf8').replace('<head>', `<head>${analyticsTag}`));
+      }
+      const etag = `"${createHash('sha256').update(content).digest('base64url').slice(0, 27)}"`;
+      cached = { content, contentType, etag };
+      assetCache.set(assetName, cached);
+    }
+    return cached;
+  }
   const store = new CaptionStore(filename);
   const subscribers = new Set();
+  let heartbeat = null;
+  let lastManualRefresh = 0;
+  function ensureHeartbeat() {
+    if (heartbeat || !subscribers.size) return;
+    heartbeat = setInterval(() => {
+      for (const sub of subscribers) {
+        if (!sub.response.destroyed && !sub.response.writableEnded) sub.response.write(': keepalive\n\n');
+      }
+    }, 15000);
+    heartbeat.unref?.();
+  }
   const sendCaption = (channelId, item) => {
     for (const sub of subscribers) {
       if (sub.channelId === channelId && sub.day === item.day) event(sub.response, 'caption', item, item.cursor);
@@ -125,13 +156,23 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
         response.setHeader('Allow', 'GET, HEAD'); json(response, 405, { error: '읽기 요청만 지원합니다.' }); return;
       }
       if (assets.has(url.pathname)) {
-        const [filename, contentType] = assets.get(url.pathname);
-        let content = await readFile(resolve(root, filename));
-        if (filename === 'captions.html' && analyticsTag) {
-          content = content.toString('utf8').replace('<head>', `<head>${analyticsTag}`);
+        const [assetName, contentType] = assets.get(url.pathname);
+        const cached = await getAsset(assetName, contentType);
+        const headers = {
+          'Content-Type': cached.contentType,
+          'Cache-Control': 'no-cache',
+          'ETag': cached.etag,
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'strict-origin-when-cross-origin',
+          'X-Frame-Options': 'DENY',
+          'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+        };
+        if (request.headers['if-none-match'] === cached.etag) {
+          response.writeHead(304, headers);
+          response.end(); return;
         }
-        response.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
-        response.end(content); return;
+        response.writeHead(200, headers);
+        response.end(request.method === 'HEAD' ? undefined : cached.content); return;
       }
       if (url.pathname === '/api/config') {
         json(response, 200, { source: channelManager ? null : source, audioUrl: channelManager ? null : audioUrl,
@@ -139,7 +180,13 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
           liveListUrl, channelRefreshMs, today: seoulDay(), timezone: 'Asia/Seoul' }); return;
       }
       if (url.pathname === '/api/channels') {
-        if (channelManager && url.searchParams.get('refresh') === '1') await channelManager.refresh();
+        if (channelManager && url.searchParams.get('refresh') === '1') {
+          const now = Date.now();
+          if (now - lastManualRefresh >= manualRefreshCooldownMs) {
+            lastManualRefresh = now;
+            await channelManager.refresh();
+          }
+        }
         const snapshot = channelManager ? channelManager.snapshot() : { channels: [{ id: 'default',
           name: broadcast?.committee || '방송', subject: broadcast?.subject || '', statusText: '', onAir: true,
           source, audioUrl, pageUrl, collector: collector.state }], refreshedAt: null, lastError: null, refreshMs: 0 };
@@ -163,12 +210,16 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
       if (url.pathname === '/api/events') {
         const channel = selectedChannel(url), day = dayParam(url);
         const since = integer(request.headers['last-event-id'] ?? url.searchParams.get('since'), store.cursor());
+        if (subscribers.size >= maxSubscribers) {
+          json(response, 503, { error: '동시 접속 한도를 초과했습니다. 잠시 후 다시 시도하세요.' }); return;
+        }
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
         if (request.method === 'HEAD') { response.end(); return; }
         response.flushHeaders();
         const sub = { response, day, channelId: channel.id, source: channel.source };
         subscribers.add(sub);
+        ensureHeartbeat();
         // No asynchronous gap between replaying missed records and subscribing to new ones.
         const backlog = store.eventsAfter(since, day, channel.source, 5001,
           channelManager ? channel.id : null, channel.historySources);
@@ -178,10 +229,10 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
           for (const item of backlog) if (!event(response, 'caption', item, item.cursor)) break;
         }
         event(response, 'status', channelManager?.collectors.get(channel.id)?.state ?? collector?.state ?? { state: 'stopped' });
-        const heartbeat = setInterval(() => {
-          if (!response.destroyed && !response.writableEnded) response.write(': keepalive\n\n');
-        }, 15000);
-        response.on('close', () => { clearInterval(heartbeat); subscribers.delete(sub); });
+        response.on('close', () => {
+          subscribers.delete(sub);
+          if (!subscribers.size && heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+        });
         return;
       }
       if (url.pathname === '/api/export') {
@@ -189,8 +240,9 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
         if ((url.searchParams.get('format') || 'txt') !== 'txt') {
           json(response, 400, { error: 'TXT 저장만 지원합니다.' }); return;
         }
+        const safeId = String(channel.id).replace(/[^a-zA-Z0-9_-]/g, '_') || 'default';
         response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
-          'Content-Disposition': `attachment; filename="captions-${channel.id}-${day}.txt"`, 'Cache-Control': 'no-store' });
+          'Content-Disposition': `attachment; filename="captions-${safeId}-${day}.txt"`, 'Cache-Control': 'no-store' });
         await write(response, '\uFEFF');
         for (const text of store.textRows(day, mode, channel.source,
           channelManager ? channel.id : null, channel.historySources)) if (!await write(response, `${text}\n\n`)) return;
@@ -209,6 +261,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
   server.requestTimeout = 30000;
   function close() {
     collector?.stop(); channelManager?.stop();
+    if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     for (const sub of subscribers) sub.response.end();
     return new Promise(resolveClose => server.close(() => { store.close(); resolveClose(); }));
   }
