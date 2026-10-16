@@ -38,6 +38,22 @@ docker compose up -d --build
 
 서버에서 자막 서버의 TCP 8091 포트로 나가는 연결이 가능해야 합니다. 중계가 없는 시간에는 자막이 오지 않을 수 있습니다. Docker 상태 점검은 웹 서버와 데이터베이스가 응답하는지 확인하며, 원본 자막 연결 상태는 화면과 `/api/status`에서 확인합니다.
 
+## Google Analytics 설정
+
+Google Analytics 4는 `.env` 대신 `compose.yaml`의 컨테이너 환경변수로 설정합니다.
+
+```yaml
+environment:
+  GA_MEASUREMENT_ID: "G-59FNBCPP6F"
+  GA_HOSTNAME: "soju.day"
+```
+
+서버가 HTML 응답에 Google 태그를 삽입하며, 브라우저의 도메인이 `GA_HOSTNAME`과 정확히 일치할 때만 실행합니다. 기본 설정에서는 로컬 주소, 서버 IP, 다른 도메인의 복제 사이트에서 방문을 수집하지 않습니다. 다른 도메인에 설치한다면 측정 ID와 도메인을 본인 값으로 변경하세요. `GA_HOSTNAME`에는 `https://`나 경로를 넣지 않습니다.
+
+분석을 끄려면 `GA_MEASUREMENT_ID: ""`로 설정합니다. ID가 없으면 태그를 삽입하지 않습니다. 측정 ID는 브라우저에 공개되는 값이므로 비밀 키로 취급하지 않습니다.
+
+설정을 변경한 뒤 `docker compose up -d --build`로 적용하고, 운영 사이트에 접속해 GA 실시간 보고서 또는 Google Tag Assistant로 수집을 확인합니다. Node.js로 직접 실행할 때도 같은 이름의 환경변수를 사용할 수 있으며, 설정하지 않으면 분석이 꺼집니다.
+
 ## 웹 화면
 
 - 접속 즉시 ON AIR 위원회 목록을 표시하고 저장된 마지막 선택 채널의 오늘 자막과 실시간 수신을 시작합니다. 마지막 채널은 브라우저 `localStorage`에 보관합니다.

@@ -5,6 +5,9 @@ services:
     ports:
       - "${CAPTION_PORT:-3000}:3000"
     environment:
+      # Set GA_MEASUREMENT_ID to "" to disable Analytics. These values are public.
+      GA_MEASUREMENT_ID: "G-59FNBCPP6F"
+      GA_HOSTNAME: "soju.day"
       BROADCAST_LIST_URL: "${BROADCAST_LIST_URL:-https://assembly.webcast.go.kr/main/service/live_list.asp}"
       CHANNEL_REFRESH_MS: "${CHANNEL_REFRESH_MS:-30000}"
       DATA_FILE: /data/captions.sqlite

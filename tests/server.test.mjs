@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { createApp } from '../server.mjs';
 
 const day = '2026-10-14', at = `${day}T08:00:00Z`, source = 'wss://example.test';
 const raw = (segment, text, final = false) => JSON.stringify({ segment, 'segment-offset': segment * 100,
   transcript: text, final });
 
-async function start(t) {
-  const app = createApp({ filename: ':memory:', collect: false, source });
+async function start(t, options = {}) {
+  const app = createApp({ filename: ':memory:', collect: false, source, ...options });
   const address = await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
   return { app, base: `http://127.0.0.1:${address.port}` };
@@ -85,4 +86,41 @@ test('오늘 방송이 없고 원본 주소가 없는 채널도 채널 ID로 과
   const response = await fetch(`http://127.0.0.1:${address.port}/api/captions?channel=33&date=${day}`);
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).rows.map(row => row.text), ['저장된 복지위 자막']);
+});
+
+test('GA는 ID가 없으면 삽입하지 않고 설정한 운영 도메인에서만 실행한다', async t => {
+  const disabled = await start(t);
+  const enabled = await start(t, { gaMeasurementId: 'G-59FNBCPP6F', gaHostname: 'captions.example.test' });
+  for (const path of ['/', '/captions.html']) {
+    const disabledHtml = await (await fetch(disabled.base + path)).text();
+    assert.ok(!disabledHtml.includes('googletagmanager.com'));
+    const html = await (await fetch(enabled.base + path)).text();
+    const tags = [...html.matchAll(/<!-- Google tag \(gtag\.js\) -->\s*<script>([\s\S]*?)<\/script>/g)];
+    assert.equal(tags.length, 1);
+    for (const hostname of ['captions.example.test', 'soju.day', 'localhost', '127.0.0.1', 'fork.example.test']) {
+      const scripts = [];
+      const context = { location: { hostname }, document: {
+        createElement: () => ({}), head: { appendChild: script => scripts.push(script) },
+      } };
+      context.window = context;
+      runInNewContext(tags[0][1], context);
+      if (hostname === 'captions.example.test') {
+        assert.equal(scripts.length, 1);
+        assert.equal(scripts[0].async, true);
+        assert.equal(scripts[0].src, 'https://www.googletagmanager.com/gtag/js?id=G-59FNBCPP6F');
+        assert.equal(context.dataLayer[1][0], 'config');
+        assert.equal(context.dataLayer[1][1], 'G-59FNBCPP6F');
+      } else {
+        assert.equal(scripts.length, 0);
+        assert.equal(context.dataLayer, undefined);
+      }
+    }
+  }
+});
+
+test('GA 설정의 잘못된 값은 HTML에 삽입하기 전에 거부한다', () => {
+  assert.throws(() => createApp({ filename: ':memory:', collect: false,
+    gaMeasurementId: "G-X</script><script>alert(1)</script>" }), /GA_MEASUREMENT_ID/);
+  assert.throws(() => createApp({ filename: ':memory:', collect: false,
+    gaMeasurementId: 'G-59FNBCPP6F', gaHostname: 'https://soju.day/' }), /GA_HOSTNAME/);
 });

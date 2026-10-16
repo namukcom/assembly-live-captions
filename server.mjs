@@ -65,7 +65,30 @@ async function write(response, chunk) {
 
 export function createApp({ filename = resolve(root, 'data/captions.sqlite'), source = defaultSource,
   audioUrl = defaultAudio, pageUrl = null, broadcast = null, liveListUrl = null,
-  channelRefreshMs = 30000, fetchImpl, collect = true, WebSocketClass } = {}) {
+  channelRefreshMs = 30000, fetchImpl, collect = true, WebSocketClass,
+  gaMeasurementId = '', gaHostname = 'soju.day' } = {}) {
+  gaMeasurementId = gaMeasurementId.trim();
+  gaHostname = gaHostname.trim().toLowerCase();
+  if (gaMeasurementId && !/^G-[A-Z0-9]+$/.test(gaMeasurementId)) {
+    throw Error('GA_MEASUREMENT_ID는 G-로 시작하는 영문 대문자·숫자 측정 ID여야 합니다.');
+  }
+  if (gaMeasurementId && !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(gaHostname)) {
+    throw Error('GA_HOSTNAME에는 프로토콜이나 경로 없이 도메인을 입력하세요.');
+  }
+  const analyticsTag = gaMeasurementId ? `
+<!-- Google tag (gtag.js) -->
+<script>
+if (location.hostname === ${JSON.stringify(gaHostname)}) {
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function () { window.dataLayer.push(arguments); };
+  gtag('js', new Date());
+  gtag('config', '${gaMeasurementId}');
+  const script = document.createElement('script');
+  script.async = true;
+  script.src = 'https://www.googletagmanager.com/gtag/js?id=${gaMeasurementId}';
+  document.head.appendChild(script);
+}
+</script>` : '';
   const store = new CaptionStore(filename);
   const subscribers = new Set();
   const sendCaption = (channelId, item) => {
@@ -103,7 +126,10 @@ export function createApp({ filename = resolve(root, 'data/captions.sqlite'), so
       }
       if (assets.has(url.pathname)) {
         const [filename, contentType] = assets.get(url.pathname);
-        const content = await readFile(resolve(root, filename));
+        let content = await readFile(resolve(root, filename));
+        if (filename === 'captions.html' && analyticsTag) {
+          content = content.toString('utf8').replace('<head>', `<head>${analyticsTag}`);
+        }
         response.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
         response.end(content); return;
       }
@@ -200,7 +226,9 @@ export function createApp({ filename = resolve(root, 'data/captions.sqlite'), so
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const app = createApp({ filename: process.env.DATA_FILE || resolve(root, 'data/captions.sqlite'),
     liveListUrl: process.env.BROADCAST_LIST_URL || defaultListUrl,
-    channelRefreshMs: Number(process.env.CHANNEL_REFRESH_MS || 30000) });
+    channelRefreshMs: Number(process.env.CHANNEL_REFRESH_MS || 30000),
+    gaMeasurementId: process.env.GA_MEASUREMENT_ID || '',
+    gaHostname: process.env.GA_HOSTNAME || 'soju.day' });
   const address = await app.listen(Number(process.env.PORT || 3000), process.env.HOST || '0.0.0.0');
   console.log(`방송 채널: ${app.channelManager.snapshot().channels.filter(channel => channel.onAir).map(channel => channel.name).join(', ') || 'ON AIR 없음'}`);
   console.log(`자막 서버 실행: http://0.0.0.0:${address.port} (자막 수집은 브라우저 접속과 무관하게 계속됩니다.)`);
