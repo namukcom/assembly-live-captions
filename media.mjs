@@ -15,18 +15,28 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   const video = $('broadcast-video'), shell = $('media-shell'), panel = $('media-panel');
   let channel = null, selectedChannel = null, sourceKey = '', player = null, prepared = '', preparing = null;
   let version = 0, preparingVersion = -1, attempt = 0, wanted = false, reloadManifest = false;
-  let quality = 'auto', expanded = false, chromeTimer = null, captionKey = '';
+  let quality = 'auto', expanded = false, chromeTimer = null, keyboardNavigation = false;
+  let captionRows = [], historyDirty = true, historyChildren = [];
+  const historyNodes = new Map(), placeholderKey = Symbol('caption-placeholder');
   let released = false, orientationManaged = false, orientationAttempt = 0;
   let pipActive = false, reloadAfterPip = false;
   const videoStorageKey = 'assembly-caption-video-enabled';
+  const mutedStorageKey = 'assembly-caption-video-muted';
   let videoEnabled = false;
   try { videoEnabled = window.localStorage?.getItem(videoStorageKey) === 'true'; } catch {}
+  try {
+    const muted = window.localStorage?.getItem(mutedStorageKey);
+    if (muted !== null && muted !== undefined) video.muted = muted === 'true';
+  } catch {}
   const audio = initAudio($, { beforePlay: () => stopVideo() });
 
   function status(message) { $('media-status').textContent = message; }
   function saveVideoPreference(value) {
     videoEnabled = value;
     try { window.localStorage?.setItem(videoStorageKey, String(value)); } catch {}
+  }
+  function saveMutedPreference() {
+    try { window.localStorage?.setItem(mutedStorageKey, String(video.muted)); } catch {}
   }
   function unavailableMessage() {
     if (!selectedChannel) return '방송 채널을 선택하세요.';
@@ -101,7 +111,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
       releaseOrientation();
       window.clearTimeout(chromeTimer); shell.classList.remove('controls-hidden');
     } else revealControls();
-    updateControls(); onLayout();
+    syncCaptionPresentation(); updateControls(); onLayout();
   }
   async function exitFullscreen() {
     releaseOrientation();
@@ -134,6 +144,11 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   function nativeUrl() {
     return quality === 'auto' ? manifestUrl() : channel.videoSources?.find(source => String(source.height) === quality)?.url || manifestUrl();
   }
+  function playbackUrl() {
+    const url = nativeUrl();
+    // The original player reloads the selected quality's master with a fresh query.
+    return `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+  }
   function showQuality(height) {
     const suffix = height ? `${height}p` : player ? '화질 확인 중' : '브라우저 선택';
     const label = quality === 'auto' ? `자동 · ${suffix}` : `${quality}p`;
@@ -156,16 +171,13 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     }
   }
   function applyQuality() {
-    if (player) {
-      const level = quality === 'auto' ? -1 : player.levels.findIndex(level => level.height === Number(quality));
-      // Keep buffered playback; the requested quality is used for subsequent downloads.
-      player.loadLevel = level;
-    } else if (prepared && channel) {
-      const resume = wanted;
-      attempt++; video.pause(); video.src = nativeUrl(); video.load();
-      if (resume) playVideo();
-    }
-    showQuality(player?.levels[player.currentLevel]?.height || 0);
+    if (!channel) return;
+    const resume = wanted;
+    wanted = false; attempt++; resetVideoConnection();
+    showQuality(0);
+    // Like the original player, switching quality starts a fresh selected source.
+    if (resume) return playVideo();
+    return prepare();
   }
   function prepare() {
     if (!channel || released || prepared === sourceKey) return Promise.resolve();
@@ -176,31 +188,52 @@ export function initMedia($, { onLayout = () => {} } = {}) {
       try {
         const native = video.canPlayType('application/vnd.apple.mpegurl');
         const safari = /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|Android/.test(navigator.userAgent);
+        const url = playbackUrl();
         if (safari && native) {
-          video.src = nativeUrl();
+          video.src = url;
         } else {
           const Hls = window.Hls || await loadHls();
           if (token !== version) return;
           if (Hls.isSupported()) {
             const current = new Hls({ autoStartLoad: false, startLevel: 0, testBandwidth: false,
-              maxBufferLength: 15, backBufferLength: 10, liveSyncDurationCount: 3,
+              maxBufferLength: 30, backBufferLength: 10,
               abrBandWidthUpFactor: 0.65, capLevelOnFPSDrop: true });
             player = current;
+            let requestedHeight = 0, requestedLevel = -1, switchVersion = 0;
             current.on(Hls.Events.MANIFEST_PARSED, () => {
               if (current !== player) return;
-              populateQuality(current.levels.map(level => level.height));
-              if (quality !== 'auto') applyQuality();
+              populateQuality(channel.videoSources?.map(source => source.height) || current.levels.map(level => level.height));
+              if (quality !== 'auto') current.loadLevel = 0;
             });
             current.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
               if (current === player) showQuality(current.levels[data.level]?.height);
+            });
+            current.on(Hls.Events.LEVEL_SWITCHING, (_event, data) => {
+              if (current !== player) return;
+              const height = current.levels[data.level]?.height;
+              if (!height || data.level === requestedLevel) return;
+              const previousHeight = requestedHeight, token = ++switchVersion;
+              requestedHeight = height; requestedLevel = data.level;
+              if (quality !== 'auto' || !previousHeight || height <= previousHeight) return;
+              // Finish the level-controller event before interrupting its fragment load.
+              // Deduplicate repeated requests and discard upgrades superseded by a drop.
+              queueMicrotask(() => {
+                if (current !== player || token !== switchVersion || quality !== 'auto' || !wanted || !video.buffered.length) return;
+                // The public immediate-switch API flushes both tracks of our muxed HLS.
+                // Restore ABR immediately; pin only the next fragment to its chosen level.
+                current.currentLevel = data.level;
+                if (current !== player) return;
+                current.loadLevel = -1;
+                current.nextAutoLevel = data.level;
+              });
             });
             current.on(Hls.Events.ERROR, (_event, data) => {
               if (current !== player || !data.fatal) return;
               failure('영상 연결 실패 · 영상 재생을 다시 누르세요.');
               current.destroy(); player = null; prepared = '';
             });
-            current.attachMedia(video); current.loadSource(manifestUrl());
-          } else if (native) video.src = nativeUrl();
+            current.attachMedia(video); current.loadSource(url);
+          } else if (native) video.src = url;
           else throw Error('이 브라우저는 영상 재생을 지원하지 않습니다.');
         }
         if (token !== version) return;
@@ -233,29 +266,28 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     if (token !== attempt || !wanted || !channel) return;
     if (prepared !== sourceKey) { wanted = false; updateControls(); return; }
     try {
-      if (player && reloadManifest) { reloadManifest = false; player.loadSource(manifestUrl()); }
+      if (player && reloadManifest) { reloadManifest = false; player.loadSource(playbackUrl()); }
       player?.startLoad();
-      if (video.seekable.length && video.paused) {
-        const index = video.seekable.length - 1;
-        video.currentTime = Math.max(video.seekable.start(index), video.seekable.end(index) - 2);
+      if (video.seekable.length) {
+        const last = video.seekable.length - 1;
+        video.currentTime = Math.max(video.seekable.start(last), video.seekable.end(last) - 2);
       }
-      try { await video.play(); }
-      catch (error) {
-        if (token !== attempt) return;
-        if (!automatic || error.name !== 'NotAllowedError' || video.muted) throw error;
-        video.muted = true; updateControls();
-        await video.play();
-      }
+      await video.play();
       if (token === attempt && wanted) { status(playingStatus()); mediaSession(); updateControls(); }
     } catch (error) {
       if (token !== attempt) return;
-      failure(error.name === 'NotAllowedError' ? '재생이 차단되었습니다. 영상 재생을 다시 누르세요.' : '영상 재생 실패 · 다시 시도하세요.');
+      const blockedMessage = automatic && !video.muted ?
+        '소리 있는 자동 재생이 차단되었습니다. 영상 재생을 누르면 소리와 함께 시작합니다.' :
+        '재생이 차단되었습니다. 영상 재생을 다시 누르세요.';
+      if (automatic && error.name === 'NotAllowedError') {
+        stopVideo(); status(blockedMessage);
+      } else failure(error.name === 'NotAllowedError' ? blockedMessage : '영상 재생 실패 · 다시 시도하세요.');
     }
   }
   function setSource(next) {
     selectedChannel = next || null;
     const valid = isPlayableChannel(next) ? next : null;
-    const key = valid ? JSON.stringify([valid.id, valid.audioUrl, valid.videoSources]) : '';
+    const key = valid ? JSON.stringify([valid.id, valid.audioUrl, valid.videoSources, valid.videoDefaultUrl]) : '';
     if (key === sourceKey) {
       channel = valid;
       if (!valid) { audio.setSource('', unavailableMessage()); status(unavailableMessage()); }
@@ -279,7 +311,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   function revealControls() {
     shell.classList.remove('controls-hidden'); window.clearTimeout(chromeTimer);
     if (expanded) chromeTimer = window.setTimeout(() => {
-      if (!video.paused && !shell.contains(document.activeElement)) shell.classList.add('controls-hidden');
+      if (!video.paused && !(keyboardNavigation && shell.contains(document.activeElement))) shell.classList.add('controls-hidden');
     }, 3500);
   }
   function releaseOrientation() {
@@ -335,23 +367,46 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     updateControls();
   }
   function setCaptions(rows, { live = true } = {}) {
-    const recent = live ? rows.filter(row => row.text?.trim()).slice(-100) : [];
-    const key = JSON.stringify([live, recent.map(row => [row.id, row.text])]);
-    if (key === captionKey) return;
-    captionKey = key;
-    const overlay = recent.slice(-3).map(row => row.text).join('\n');
+    const latest = [];
+    if (live) for (let index = rows.length - 1; index >= 0 && latest.length < 3; index--) {
+      if (rows[index].text?.trim()) latest.push(rows[index].text);
+    }
+    latest.reverse();
+    captionRows = live ? rows : []; historyDirty = true;
+    const overlay = latest.join('\n');
     // Keep the end of a long utterance visible rather than clipping new words.
-    $('caption-overlay-text').textContent = overlay.slice(-270) || (live ? '새 자막을 기다리고 있습니다.' : '실시간 자막은 오늘 날짜에서 표시됩니다.');
-    $('caption-overlay-text').scrollTop = $('caption-overlay-text').scrollHeight;
+    const nextOverlay = overlay.slice(-270) || (live ? '새 자막을 기다리고 있습니다.' : '실시간 자막은 오늘 날짜에서 표시됩니다.');
+    if ($('caption-overlay-text').textContent !== nextOverlay) $('caption-overlay-text').textContent = nextOverlay;
+    syncCaptionPresentation();
+  }
+  function syncCaptionPresentation() {
+    if (!expanded || panel.hidden) return;
+    if (!shell.classList.contains('caption-layout-split')) {
+      if (!shell.classList.contains('caption-layout-off')) $('caption-overlay-text').scrollTop = $('caption-overlay-text').scrollHeight;
+      return;
+    }
+    if (!historyDirty) return;
+    historyDirty = false;
+    const recent = [];
+    for (let index = captionRows.length - 1; index >= 0 && recent.length < 100; index--) {
+      if (captionRows[index].text?.trim()) recent.push(captionRows[index]);
+    }
+    recent.reverse();
     const history = $('fullscreen-captions');
     const follow = history.scrollHeight - history.clientHeight - history.scrollTop < 60;
-    const children = recent.map(row => {
-      const paragraph = document.createElement('p'); paragraph.textContent = row.text; return paragraph;
+    const visible = recent.length ? recent : [{ id: placeholderKey, text: $('caption-overlay-text').textContent }];
+    const keep = new Set();
+    const children = visible.map(row => {
+      keep.add(row.id);
+      let paragraph = historyNodes.get(row.id);
+      if (!paragraph) { paragraph = document.createElement('p'); historyNodes.set(row.id, paragraph); }
+      if (paragraph.textContent !== row.text) paragraph.textContent = row.text;
+      return paragraph;
     });
-    if (!children.length) {
-      const paragraph = document.createElement('p'); paragraph.textContent = $('caption-overlay-text').textContent; children.push(paragraph);
+    for (const id of historyNodes.keys()) if (!keep.has(id)) historyNodes.delete(id);
+    if (children.length !== historyChildren.length || children.some((child, index) => child !== historyChildren[index])) {
+      $('fullscreen-history').replaceChildren(...children); historyChildren = children;
     }
-    $('fullscreen-history').replaceChildren(...children);
     if (follow) history.scrollTop = history.scrollHeight;
   }
 
@@ -360,7 +415,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     stopVideo(); status('영상 정지');
   };
   for (const id of ['video-quality', 'fullscreen-quality']) $(id).onchange = () => {
-    quality = $(id).value; applyQuality();
+    quality = $(id).value; return applyQuality();
   };
   $('fullscreen-toggle').onclick = toggleFullscreen;
   $('fullscreen-exit').onclick = exitFullscreen;
@@ -368,12 +423,14 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   for (const id of ['video-sound', 'fullscreen-sound']) $(id).onclick = () => {
     if (!channel || panel.hidden) return;
     video.muted = !video.muted;
+    saveMutedPreference();
     if (wanted && !video.paused) status(playingStatus());
     updateControls();
   };
   $('caption-layout').onchange = () => {
     for (const layout of ['overlay', 'split', 'off']) shell.classList.toggle(`caption-layout-${layout}`, $('caption-layout').value === layout);
-    $('fullscreen-captions').scrollTop = $('fullscreen-captions').scrollHeight;
+    syncCaptionPresentation();
+    if (expanded && $('caption-layout').value === 'split') $('fullscreen-captions').scrollTop = $('fullscreen-captions').scrollHeight;
   };
   $('fullscreen-play').onclick = () => {
     if (video.paused) playVideo();
@@ -387,12 +444,12 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   video.addEventListener('pause', () => {
     if (!video.paused) return;
     if (wanted) { saveVideoPreference(false); wanted = false; attempt++; stopLoading(); status('영상 일시정지'); }
-    updateControls(); if (!panel.hidden) mediaSession();
+    updateControls(); revealControls(); if (!panel.hidden) mediaSession();
   });
   video.addEventListener('waiting', () => { if (wanted) status('영상 버퍼링 중'); });
-  video.addEventListener('loadedmetadata', updateControls);
-  video.addEventListener('loadeddata', updateControls);
+  for (const name of ['loadedmetadata', 'loadeddata']) video.addEventListener(name, updateControls);
   video.addEventListener('volumechange', () => {
+    saveMutedPreference();
     if (wanted && !video.paused) status(playingStatus());
     updateControls();
   });
@@ -401,9 +458,21 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   video.addEventListener('error', () => { if (video.error && !panel.hidden) { prepared = ''; failure('영상 연결 실패 · 다시 시도하세요.'); } });
   for (const name of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged']) video.addEventListener(name, pipChanged);
   for (const name of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(name, fullscreenChanged);
-  for (const name of ['pointermove', 'pointerdown', 'touchstart', 'keydown']) shell.addEventListener(name, revealControls, { passive: true });
+  let lastControlReveal = 0;
+  for (const name of ['pointermove', 'pointerdown', 'touchstart', 'keydown', 'focusin', 'focusout']) shell.addEventListener(name, () => {
+    if (name === 'keydown') keyboardNavigation = true;
+    else if (name === 'pointerdown' || name === 'touchstart') keyboardNavigation = false;
+    if (name === 'pointermove') {
+      const now = Date.now();
+      if (!shell.classList.contains('controls-hidden') && now - lastControlReveal < 200) return;
+      lastControlReveal = now;
+    }
+    revealControls();
+  }, { passive: true });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && expanded) exitFullscreen(); });
-  window.addEventListener('pagehide', () => { stopVideo({ preservePreference: true }); audio.suspend(); });
+  window.addEventListener('pagehide', () => {
+    saveMutedPreference(); stopVideo({ preservePreference: true }); audio.suspend();
+  });
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;
     stopVideo({ preservePreference: true }); audio.suspend();

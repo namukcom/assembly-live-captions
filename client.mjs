@@ -4,10 +4,14 @@ import { seoulSlot } from './lib/caption-format.mjs';
 const $ = id => document.getElementById(id);
 const channelStorageKey = 'assembly-caption-channel';
 let config, mediaController, stream, loadAbort, generation = 0, wantsLive = true, loading = false;
-let cursor = 0, collectorState = 'connecting', followFrame = null, renderFrame = null;
-let captions = new Map(), records = new Map(), articles = new Map(), dirtyStructure = true;
+let cursor = 0, collectorState = 'connecting', followFrame = null, renderFrame = null, layoutFrame = null;
+let captions = new Map(), records = new Map(), articles = new Map(), rawArticles = new Map(), dirtyStructure = true;
+let orderedCaptions = null, finalCaptions = null, orderedRecords = null, renderedRows = null, renderedCount = 0, renderedSlot = null, latestArticle = null;
+const pendingCaptionUpdates = new Set(), pendingRecordUpdates = new Set(), layoutHeights = new Map();
 let channels = [], channelId = '', preferredChannelId = '', viewDay = '';
+let channelOptionsKey = '';
 let chromeTimer = null;
+let keyboardNavigation = false;
 
 function selectedChannel() { return channels.find(channel => channel.id === channelId) ?? null; }
 
@@ -20,7 +24,8 @@ function keepChromeVisible() {
 function canAutoHideChrome() {
   return Boolean(wantsLive && !loading && selectedChannel() && config &&
     $('date').value === config.today && collectorState === 'connected' && !$('source-settings').open &&
-    $('search-panel').hidden && !['channel', 'date', 'mode'].some(id => $(id) === document.activeElement));
+    $('search-panel').hidden && !(keyboardNavigation &&
+      ['channel', 'date', 'mode'].some(id => $(id) === document.activeElement)));
 }
 
 function revealChrome() {
@@ -56,13 +61,21 @@ function updateStatus() {
 }
 
 function syncLayout() {
-  const toolbar = document.querySelector('.controls');
-  const header = document.querySelector('.top-panel');
-  document.documentElement.style.setProperty('--toolbar-height', `${Math.ceil(toolbar.getBoundingClientRect().height)}px`);
-  document.documentElement.style.setProperty('--header-height', `${Math.ceil(header.getBoundingClientRect().height)}px`);
-  const panel = $('media-panel');
-  document.documentElement.style.setProperty('--video-height', `${panel.hidden ? 0 : Math.ceil(panel.getBoundingClientRect().height)}px`);
-  followLatest();
+  if (layoutFrame !== null) return;
+  layoutFrame = requestAnimationFrame(() => {
+    layoutFrame = null;
+    const panel = $('media-panel');
+    const heights = [
+      ['--toolbar-height', Math.ceil(document.querySelector('.controls').getBoundingClientRect().height)],
+      ['--header-height', Math.ceil(document.querySelector('.top-panel').getBoundingClientRect().height)],
+      ['--video-height', panel.hidden ? 0 : Math.ceil(panel.getBoundingClientRect().height)],
+    ];
+    for (const [name, height] of heights) if (layoutHeights.get(name) !== height) {
+      layoutHeights.set(name, height);
+      document.documentElement.style.setProperty(name, `${height}px`);
+    }
+    followLatest();
+  });
 }
 
 function followLatest() {
@@ -70,34 +83,48 @@ function followLatest() {
   followFrame = requestAnimationFrame(() => {
     followFrame = null;
     if (!$('follow').checked || $('search').value.trim()) return;
-    const latest = $('rows').querySelector('article:last-of-type');
+    const latest = latestArticle;
     if (!latest) return;
     const scroller = $('caption-scroller');
     const bottom = scroller.getBoundingClientRect().bottom - 12;
-    scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + latest.getBoundingClientRect().bottom - bottom), behavior: 'auto' });
+    const top = Math.max(0, scroller.scrollTop + latest.getBoundingClientRect().bottom - bottom);
+    if (Math.abs(top - scroller.scrollTop) >= 1) scroller.scrollTo({ top, behavior: 'auto' });
   });
 }
 
 function cleanRows(mode = $('mode').value) {
-  const rows = [...captions.values()].sort((a, b) => (a._time ?? Date.parse(a.at)) - (b._time ?? Date.parse(b.at)));
-  return mode === 'final' ? rows.filter(row => row.final !== false) : rows;
+  orderedCaptions ??= [...captions.values()].sort((a, b) => a._time - b._time);
+  if (mode !== 'final') return orderedCaptions;
+  return finalCaptions ??= orderedCaptions.filter(row => row.final !== false);
 }
 
 function visibleRows() {
   if ($('mode').value !== 'raw') return cleanRows();
-  return [...records.values()].filter(row => row.text.trim())
-    .sort((a, b) => (a._time ?? Date.parse(a.at)) - (b._time ?? Date.parse(b.at)));
+  return orderedRecords ??= [...records.values()].filter(row => row.text.trim()).sort((a, b) => a._time - b._time);
 }
 
 function render() {
   const query = $('search').value.trim().toLowerCase();
-  let matchCount = captions.size;
-  if (dirtyStructure || query || $('mode').value === 'raw') {
-    const rows = visibleRows().filter(row => !query || row.text.toLowerCase().includes(query));
-    matchCount = rows.length;
+  const sourceRows = visibleRows();
+  const rows = query ? sourceRows.filter(row => row.text.toLowerCase().includes(query)) : sourceRows;
+  const samePrefix = rows === renderedRows || (query && rows.length >= renderedCount &&
+    rows.every((row, index) => index >= renderedCount || row === renderedRows?.[index]));
+  const rebuild = dirtyStructure || !samePrefix || rows.length < renderedCount;
+  for (const [pending, nodes, data] of [[pendingCaptionUpdates, articles, captions], [pendingRecordUpdates, rawArticles, records]]) {
+    for (const id of pending) {
+      const article = nodes.get(id), row = data.get(id);
+      if (article && row && article.textContent !== row.text) article.textContent = row.text;
+    }
+    pending.clear();
+  }
+  const matchCount = query ? rows.length : captions.size;
+  if (rebuild || rows.length > renderedCount) {
     const fragment = document.createDocumentFragment();
-    let prevSlot = null;
-    for (const row of rows) {
+    let prevSlot = rebuild ? null : renderedSlot;
+    if (rebuild) latestArticle = null;
+    const nodes = $('mode').value === 'raw' ? rawArticles : articles;
+    for (let index = rebuild ? 0 : renderedCount; index < rows.length; index++) {
+      const row = rows[index];
       const slot = query ? null : seoulSlot(row.at);
       if (slot && prevSlot && slot !== prevSlot) {
         const divider = document.createElement('p');
@@ -106,13 +133,14 @@ function render() {
         fragment.append(divider);
       }
       if (slot) prevSlot = slot;
-      let article = $('mode').value === 'raw' ? null : articles.get(row.id);
+      let article = nodes.get(row.id);
       if (!article) {
         article = document.createElement('article');
-        if ($('mode').value !== 'raw') articles.set(row.id, article);
+        nodes.set(row.id, article);
       }
-      article.textContent = row.text;
+      if (article.textContent !== row.text) article.textContent = row.text;
       fragment.append(article);
+      latestArticle = article;
     }
     if (!rows.length) {
       const paragraph = document.createElement('p'); paragraph.className = 'note'; paragraph.style.padding = '20px';
@@ -121,13 +149,16 @@ function render() {
         $('mode').value === 'final' ? '완성된 자막이 아직 없습니다.' : '이 채널에 저장된 자막이 아직 없습니다.';
       fragment.append(paragraph);
     }
-    $('rows').replaceChildren(fragment);
-    dirtyStructure = Boolean(query || $('mode').value === 'raw' || !rows.length);
+    if (rebuild || renderedCount === 0) $('rows').replaceChildren(fragment);
+    else $('rows').append(fragment);
+    renderedRows = rows; renderedCount = rows.length; renderedSlot = prevSlot;
+    dirtyStructure = !rows.length;
   }
   const channel = selectedChannel();
   const day = viewDay || $('date').value;
-  $('count').textContent = channel ? `${day} · ${channel.name} · ${captions.size}개 자막${query ? ` · 검색 ${matchCount}개` : ''}` : 'ON AIR 채널 없음';
-  mediaController?.setCaptions($('mode').value === 'raw' ? visibleRows() : cleanRows(), {
+  const count = channel ? `${day} · ${channel.name} · ${captions.size}개 자막${query ? ` · 검색 ${matchCount}개` : ''}` : 'ON AIR 채널 없음';
+  if ($('count').textContent !== count) $('count').textContent = count;
+  mediaController?.setCaptions(sourceRows, {
     live: Boolean(config && $('date').value === config.today && day === config.today),
   });
   followLatest();
@@ -143,18 +174,38 @@ function applyCaption(row) {
   const old = captions.get(row.id);
   if (!old || old.revision <= row.revision) {
     row._time = old?._time ?? Date.parse(row.at);
-    captions.set(row.id, row);
-    if (!old || (old.final !== false) !== (row.final !== false)) dirtyStructure = true;
-    const article = articles.get(row.id);
-    if (article) article.textContent = row.text;
+    if (old) {
+      const membershipChanged = (old.final !== false) !== (row.final !== false);
+      Object.assign(old, row);
+      if (membershipChanged) finalCaptions = old.final !== false ? appendOrdered(finalCaptions, old) : null;
+    } else {
+      captions.set(row.id, row);
+      orderedCaptions = appendOrdered(orderedCaptions, row);
+      if (row.final !== false) finalCaptions = appendOrdered(finalCaptions, row);
+    }
+    pendingCaptionUpdates.add(row.id);
   }
+}
+
+function appendOrdered(rows, row) {
+  if (!rows || !Number.isFinite(row._time) || (rows.length && row._time < rows.at(-1)._time)) return null;
+  rows.push(row); return rows;
 }
 
 function applyRecord(row) {
   if (!row || (viewDay && row.day !== viewDay)) return;
+  const old = records.get(row.id);
   row._time = Date.parse(row.at);
-  records.set(row.id, row);
-  dirtyStructure = true;
+  if (old) {
+    const membershipChanged = Boolean(old.text.trim()) !== Boolean(row.text.trim());
+    const timeChanged = old._time !== row._time;
+    Object.assign(old, row);
+    if (membershipChanged || timeChanged) orderedRecords = null;
+  } else {
+    records.set(row.id, row);
+    if (row.text.trim()) orderedRecords = appendOrdered(orderedRecords, row);
+  }
+  pendingRecordUpdates.add(row.id);
 }
 
 async function getJson(url, options) {
@@ -190,7 +241,9 @@ async function loadView() {
   keepChromeVisible();
   const token = ++generation;
   stream?.close(); stream = null; loadAbort?.abort(); loadAbort = new AbortController();
-  captions = new Map(); records = new Map(); articles = new Map(); dirtyStructure = true; cursor = 0;
+  captions = new Map(); records = new Map(); articles = new Map(); rawArticles = new Map(); dirtyStructure = true; cursor = 0;
+  orderedCaptions = finalCaptions = orderedRecords = renderedRows = null; renderedCount = 0; renderedSlot = null; latestArticle = null;
+  pendingCaptionUpdates.clear(); pendingRecordUpdates.clear();
   if (!channelId) { loading = false; updateStatus(); render(); return; }
   loading = true; updateStatus(); render();
   try {
@@ -223,14 +276,20 @@ function channelBullet(channel) {
 }
 
 function renderChannelOptions() {
-  const fragment = document.createDocumentFragment();
-  for (const channel of channels) {
-    const option = document.createElement('option'); option.value = channel.id;
+  const options = channels.map(channel => {
     const state = isLiveChannel(channel) ? 'ON AIR' : channel.statusText || '종료';
-    option.textContent = `${channelBullet(channel)} ${channel.name} · ${state}${channel.subject ? ` · ${channel.subject}` : ''}`;
-    fragment.append(option);
+    return [channel.id, `${channelBullet(channel)} ${channel.name} · ${state}${channel.subject ? ` · ${channel.subject}` : ''}`];
+  });
+  const key = JSON.stringify(options);
+  if (key !== channelOptionsKey) {
+    const fragment = document.createDocumentFragment();
+    for (const [id, label] of options) {
+      const option = document.createElement('option'); option.value = id; option.textContent = label;
+      fragment.append(option);
+    }
+    $('channel').replaceChildren(fragment); channelOptionsKey = key;
   }
-  $('channel').replaceChildren(fragment); $('channel').value = channelId;
+  $('channel').value = channelId;
   $('channel').disabled = channels.length === 0;
 }
 
@@ -254,6 +313,7 @@ async function refreshChannels(manual = false) {
   if (manual) $('refresh-channels').disabled = true;
   try {
     const data = await getJson(manual ? '/api/channels?refresh=1' : '/api/channels');
+    const wasOnAir = isLiveChannel(selectedChannel());
     const previousCaptionReady = canReceiveCaptions(selectedChannel());
     channels = [...data.channels].sort((left, right) =>
       Number(left.statusText?.trim() === '생중계 없음') - Number(right.statusText?.trim() === '생중계 없음'));
@@ -276,6 +336,9 @@ async function refreshChannels(manual = false) {
         const followedToday = !$('date').value || $('date').value === config.today;
         config.today = data.today; $('date').max = data.today;
         if (followedToday) { $('date').value = data.today; reload = true; }
+      }
+      if (!wasOnAir && isLiveChannel(channel) && $('date').value === config.today) {
+        wantsLive = true; reload = true;
       }
       if (reload) loadView();
     }
@@ -325,7 +388,7 @@ $('search').onkeydown = event => {
   if (event.key === 'Escape') { event.preventDefault(); closeSearch(); }
 };
 for (const id of ['channel', 'date', 'mode']) {
-  $(id).addEventListener('focus', keepChromeVisible);
+  $(id).addEventListener('focus', revealChrome);
   $(id).addEventListener('blur', revealChrome);
 }
 $('date').onchange = () => {
@@ -369,8 +432,18 @@ async function keepScreen() {
   finally { wakePending = false; }
 }
 $('keep-screen').onchange = keepScreen;
+let lastChromeReveal = 0;
 for (const eventName of ['pointerdown', 'pointermove', 'touchstart', 'touchmove', 'wheel', 'keydown']) {
-  document.addEventListener(eventName, revealChrome, { passive: true });
+  document.addEventListener(eventName, () => {
+    if (eventName === 'keydown') keyboardNavigation = true;
+    else if (eventName === 'pointerdown' || eventName === 'touchstart') keyboardNavigation = false;
+    if (eventName === 'pointermove' || eventName === 'touchmove' || eventName === 'wheel') {
+      const now = Date.now();
+      if (!document.body.classList.contains('chrome-hidden') && now - lastChromeReveal < 200) return;
+      lastChromeReveal = now;
+    }
+    revealChrome();
+  }, { passive: true });
 }
 $('source-settings').addEventListener('toggle', () => $('source-settings').open ? keepChromeVisible() : revealChrome());
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepScreen(); revealChrome(); } });

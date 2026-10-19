@@ -14,6 +14,8 @@ test('국회 생중계 응답에서 자막과 240p 오디오 주소를 만든다
   const config = parseBroadcastPage(response, pageUrl);
   assert.equal(config.source, 'wss://smiai.webcast.go.kr:8091/aistt/beopsa/hls');
   assert.equal(config.audioUrl, 'https://w-assembly.hscdn.com/assembly/beopsa_240p/playlist.m3u8');
+  assert.equal(config.videoDefaultUrl, response.xhls[0].default);
+  assert.ok(config.videoSources.some(source => source.height === 480 && source.url === config.videoDefaultUrl), '원본 기본 화질도 선택할 수 있다');
   assert.equal(config.broadcast.committee, '법제사법위원회');
   const mediaOnly = parseBroadcastPage({ ...response, xsami: '' }, pageUrl);
   assert.equal(mediaOnly.source, null);

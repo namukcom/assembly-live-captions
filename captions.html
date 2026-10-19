@@ -93,6 +93,7 @@ body.chrome-hidden .controls{transform:translateY(100%);opacity:0;pointer-events
 body.chrome-hidden #caption-scroller{top:var(--video-height,0px);bottom:0}
 @media(max-width:850px){
   html{--toolbar-height:340px}
+  article{font-size:21px;line-height:2}
   .media-source-note{display:block;font-size:10px}.media-source-note span{display:block}.media-source-note span+span::before{content:none}
   .toolbar-top{grid-template-columns:minmax(0,1fr);gap:8px}
   .playback-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;gap:2px 6px;min-height:52px;padding:5px 8px}
@@ -107,7 +108,7 @@ body.chrome-hidden #caption-scroller{top:var(--video-height,0px);bottom:0}
   .top-panel{padding:8px 12px}.top-panel h1{font-size:18px}.title-row{gap:8px;margin-bottom:6px}.channel-bar{padding:9px}
   .media-source-note{font-size:9px}
   .caption-inner{padding:12px}
-  article{font-size:18px;padding:10px 16px}
+  article{font-size:20px;padding:10px 16px}
   .controls{padding-left:12px;padding-right:12px}
   .follow-controls{column-gap:6px}
   .playback-settings{gap:6px}.playback-row{min-height:48px;padding:5px 6px;column-gap:4px}.playback-copy strong{font-size:12px}.switch-track{width:38px;height:22px}.switch-track::after{width:18px;height:18px}.ios-toggle:checked+.switch-track::after{transform:translateX(16px)}
@@ -152,7 +153,6 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
 .fullscreen-history p{margin:0 0 10px;white-space:pre-wrap;overflow-wrap:anywhere}
 .media-shell:fullscreen .fullscreen-controls,.media-shell.is-expanded .fullscreen-controls{display:flex;position:absolute;z-index:2;left:0;right:0;bottom:0;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;padding:8px max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom));background:#111a28ee;transition:opacity .2s}
 .media-shell.controls-hidden .fullscreen-controls{opacity:0;pointer-events:none}
-.media-shell:focus-within .fullscreen-controls{opacity:1;pointer-events:auto}
 @media(max-width:850px){
  body:not(.chrome-hidden) .media-shell:not(:fullscreen):not(.is-expanded) .video-stage{height:clamp(72px,calc(100dvh - var(--header-height,170px) - var(--toolbar-height,200px) - 100px),min(29dvh,270px,56.25vw))}
 }

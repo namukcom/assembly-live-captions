@@ -11,7 +11,7 @@ class FakeSocket extends EventTarget {
 
 const list = active => ({ xlist: [
   { xcode: '45', xcgcd: 'DCM45', xname: '행안위', xstat: active ? '1' : '0', xsubj: '감사', xdesc: active ? '감사계속' : '감사종료' },
-  { xcode: '33', xcgcd: '', xname: '복지위', xstat: '0', xsubj: '', xdesc: '생중계 없음' },
+  { xcode: '33', xcgcd: 'DCM33', xname: '복지위', xstat: '0', xsubj: '', xdesc: '생중계 없음' },
 ] });
 const detail = { xsami: 'wss://smiai.webcast.go.kr:8091/aistt/haengan',
   xhls: [{ '240p': 'https://w-assembly.hscdn.com/assembly/haengan_240p/playlist.m3u8' }],
@@ -32,11 +32,12 @@ test('ON AIR 채널 수집기를 시작하고 상태 변경 시 중지한다', a
     assert.deepEqual(store.sourcesForChannel('45'), ['wss://smiai.webcast.go.kr:8091/aistt/haengan/hls']);
     assert.equal(manager.get('33').onAir, false, '오늘 방송이 없는 채널도 목록에 유지한다');
     assert.equal(FakeSocket.instances.length, 1);
-    assert.equal(detailCalls, 1);
+    assert.equal(detailCalls, 1, '생중계 없음 채널은 상세 페이지를 조회하지 않는다');
     FakeSocket.instances[0].dispatchEvent(new Event('open'));
     await manager.refresh();
     assert.equal(detailCalls, 1, '이미 연결된 동일 편성 채널은 상세 페이지를 중복 조회하지 않는다');
     active = false; await manager.refresh();
+    assert.equal(detailCalls, 1, '감사종료 채널은 상세 페이지를 다시 조회하지 않는다');
     assert.equal(manager.get('45').onAir, false);
     assert.equal(manager.get('45').source, 'wss://smiai.webcast.go.kr:8091/aistt/haengan/hls');
     assert.equal(manager.collectors.size, 0); assert.equal(FakeSocket.instances[0].closed, true);
