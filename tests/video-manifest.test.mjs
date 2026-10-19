@@ -38,7 +38,7 @@ test('외부·HTTP 주소와 악성 하위 목록은 거부하고 재생 가능�
     text: async () => playlist(240, 'https://evil.test/segments.m3u8') })), { status: 502 });
 });
 
-test('영상 목록 경로는 짧게 캐시하며 종료 채널·알 수 없는 채널을 거부한다', async t => {
+test('영상 목록은 짧게 캐시하고 ON AIR와 관계없이 주소가 있으면 제공한다', async t => {
   let calls = 0;
   const app = createApp({ filename: ':memory:', collect: false,
     liveListUrl: 'https://assembly.webcast.go.kr/main/service/live_list.asp',
@@ -46,6 +46,7 @@ test('영상 목록 경로는 짧게 캐시하며 종료 채널·알 수 없는 
   });
   app.channelManager.items.set('19', { id: '19', onAir: true, audioUrl: sources[0].url, videoSources: sources.slice(0, 2) });
   app.channelManager.items.set('20', { id: '20', onAir: false, audioUrl: sources[0].url });
+  app.channelManager.items.set('21', { id: '21', onAir: true, audioUrl: null });
   const address = await app.listen(0, '127.0.0.1'); t.after(() => app.close());
   const url = `http://127.0.0.1:${address.port}`;
   const responses = await Promise.all([fetch(`${url}/api/video.m3u8?channel=19`), fetch(`${url}/api/video.m3u8?channel=19`)]);
@@ -55,7 +56,10 @@ test('영상 목록 경로는 짧게 캐시하며 종료 채널·알 수 없는 
     assert.match(response.headers.get('content-type'), /application\/vnd.apple.mpegurl/);
     assert.match(await response.text(), /test_240p\/chunklist.m3u8/);
   }
-  assert.equal((await fetch(`${url}/api/video.m3u8?channel=20`)).status, 409);
+  const offAir = await fetch(`${url}/api/video.m3u8?channel=20`);
+  assert.equal(offAir.status, 200);
+  assert.match(await offAir.text(), /test_240p\/chunklist.m3u8/);
+  assert.equal((await fetch(`${url}/api/video.m3u8?channel=21`)).status, 409);
   assert.equal((await fetch(`${url}/api/video.m3u8?channel=999`)).status, 404);
   assert.equal((await fetch(`${url}/media.mjs`)).status, 200);
 });

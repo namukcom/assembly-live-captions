@@ -40,5 +40,38 @@ test('ON AIR 채널 수집기를 시작하고 상태 변경 시 중지한다', a
     assert.equal(manager.get('45').onAir, false);
     assert.equal(manager.get('45').source, 'wss://smiai.webcast.go.kr:8091/aistt/haengan/hls');
     assert.equal(manager.collectors.size, 0); assert.equal(FakeSocket.instances[0].closed, true);
+    assert.equal(manager.get('45').audioUrl, detail.xhls[0]['240p'], '방송 종료 후에도 현재 편성의 미디어 주소는 제공한다');
+  } finally { manager.stop(); store.close(); }
+});
+
+test('방송 시작 전 미디어 주소를 조회하고 편성이 바뀌면 이전 주소를 제거하되 자막 이력은 유지한다', async () => {
+  FakeSocket.instances = [];
+  const store = new CaptionStore(':memory:');
+  const historicalSource = 'wss://smiai.webcast.go.kr:8091/aistt/haengan/hls';
+  store.rememberChannelSource('45', historicalSource);
+  let schedule = 'DCM45', failDetails = false, detailCalls = 0;
+  const fetchImpl = async url => {
+    if (url.pathname.endsWith('live_list.asp')) return { ok: true, json: async () => ({ xlist: [
+      { ...list(false).xlist[0], xcgcd: schedule, xdesc: '20:30 계속예정' }, list(false).xlist[1],
+    ] }) };
+    detailCalls++;
+    if (failDetails) throw Error('temporary detail failure');
+    return { ok: true, json: async () => ({ ...detail, xsami: 'wss://smiai.webcast.go.kr/aistt/standby' }) };
+  };
+  const manager = new ChannelManager({ store, fetchImpl, WebSocketClass: FakeSocket, refreshMs: 60000 });
+  try {
+    await manager.start();
+    assert.equal(manager.get('45').onAir, false);
+    assert.equal(manager.get('45').audioUrl, detail.xhls[0]['240p']);
+    assert.equal(manager.get('45').source, historicalSource);
+    assert.deepEqual(store.sourcesForChannel('45'), [historicalSource], '방송 전 임시 주소를 자막 이력에 섞지 않는다');
+    assert.equal(manager.collectors.size, 0); assert.equal(FakeSocket.instances.length, 0);
+    failDetails = true; await manager.refresh();
+    assert.equal(manager.get('45').audioUrl, detail.xhls[0]['240p'], '같은 편성의 일시 조회 실패에는 확인된 주소를 유지한다');
+    schedule = 'DCM46'; await manager.refresh();
+    assert.equal(manager.get('45').audioUrl, null, '다른 편성에 이전 재생 주소를 재사용하지 않는다');
+    schedule = ''; await manager.refresh();
+    assert.equal(detailCalls, 3, '상세 페이지가 없는 채널은 조회하지 않는다');
+    assert.equal(manager.get('45').audioUrl, null);
   } finally { manager.stop(); store.close(); }
 });

@@ -1,15 +1,41 @@
 import { initAudio, loadHls } from './audio.mjs';
 
+const inactiveBroadcast = /생중계없음|예정|중지|정회|종료|산회|폐회/;
+export function isLiveChannel(channel) {
+  return Boolean(channel?.onAir && !inactiveBroadcast.test((channel.statusText || '').replace(/\s/g, '')));
+}
+export function isPlayableChannel(channel) {
+  return Boolean(channel?.audioUrl);
+}
+export function canReceiveCaptions(channel) {
+  return Boolean(isLiveChannel(channel) && channel.source);
+}
+
 export function initMedia($, { onLayout = () => {} } = {}) {
   const video = $('broadcast-video'), shell = $('media-shell'), panel = $('media-panel');
-  let channel = null, sourceKey = '', player = null, prepared = '', preparing = null;
+  let channel = null, selectedChannel = null, sourceKey = '', player = null, prepared = '', preparing = null;
   let version = 0, preparingVersion = -1, attempt = 0, wanted = false, reloadManifest = false;
   let quality = 'auto', expanded = false, chromeTimer = null, captionKey = '';
   let released = false, orientationManaged = false, orientationAttempt = 0;
   let pipActive = false, reloadAfterPip = false;
+  const videoStorageKey = 'assembly-caption-video-enabled';
+  let videoEnabled = false;
+  try { videoEnabled = window.localStorage?.getItem(videoStorageKey) === 'true'; } catch {}
   const audio = initAudio($, { beforePlay: () => stopVideo() });
 
   function status(message) { $('media-status').textContent = message; }
+  function saveVideoPreference(value) {
+    videoEnabled = value;
+    try { window.localStorage?.setItem(videoStorageKey, String(value)); } catch {}
+  }
+  function unavailableMessage() {
+    if (!selectedChannel) return '방송 채널을 선택하세요.';
+    const state = selectedChannel.statusText || '';
+    const reason = isLiveChannel(selectedChannel) ?
+      '재생 주소 확인 중' : state || '현재 방송 중이 아님';
+    return `${selectedChannel.name} · ${reason}`;
+  }
+  function playingStatus() { return video.muted ? '영상 재생 중 · 음소거' : '영상 재생 중'; }
   function isFullscreen() { return document.fullscreenElement === shell || document.webkitFullscreenElement === shell; }
   function inPip() { return document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture'; }
   function supportedPip() {
@@ -17,15 +43,23 @@ export function initMedia($, { onLayout = () => {} } = {}) {
       video.webkitSupportsPresentationMode?.('picture-in-picture'));
   }
   function updateControls() {
-    const active = !panel.hidden;
+    const active = Boolean(channel && !panel.hidden);
     $('video-toggle').checked = active && wanted;
-    $('video-options').hidden = !(active && wanted);
+    $('video-options').hidden = !active;
     $('video-toggle').disabled = !channel;
-    $('video-quality').disabled = !channel;
-    $('pip-toggle').disabled = !active || video.readyState < 2 || !supportedPip();
+    $('video-quality').disabled = !active;
+    $('fullscreen-quality').disabled = !active;
+    $('pip-toggle').disabled = !active || (!inPip() && (video.paused || !wanted || video.readyState < 2 || !supportedPip()));
     $('pip-toggle').setAttribute('aria-pressed', String(inPip()));
     $('pip-toggle').title = supportedPip() ? '작은 창으로 영상 보기 (자막 제외)' : '이 브라우저는 PIP를 지원하지 않습니다';
     $('fullscreen-toggle').disabled = !active;
+    $('fullscreen-play').disabled = !channel;
+    for (const id of ['video-sound', 'fullscreen-sound']) {
+      $(id).disabled = !active;
+      $(id).textContent = video.muted ? '소리 켜기' : '음소거';
+      $(id).setAttribute('aria-label', video.muted ? '영상 소리 켜기' : '영상 음소거');
+      $(id).setAttribute('aria-pressed', String(Boolean(video.muted)));
+    }
     $('fullscreen-toggle').setAttribute('aria-pressed', String(expanded));
     $('fullscreen-toggle').textContent = expanded ? '전체화면 종료' : '전체화면';
     $('fullscreen-play').textContent = video.paused ? '재생' : '일시정지';
@@ -86,7 +120,8 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     prepared = ''; reloadManifest = false; reloadAfterPip = false;
     video.removeAttribute('src'); video.load();
   }
-  function stopVideo() {
+  function stopVideo({ preservePreference = false } = {}) {
+    if (!preservePreference) saveVideoPreference(false);
     attempt++; wanted = false; released = true; panel.hidden = true; pipActive = false;
     resetVideoConnection();
     exitPip(); exitFullscreen();
@@ -180,8 +215,9 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     preparing = job;
     return job;
   }
-  async function playVideo() {
-    if (!channel) return;
+  async function playVideo({ automatic = false } = {}) {
+    if (!channel) { updateControls(); return; }
+    if (!automatic) saveVideoPreference(true);
     if (reloadAfterPip) {
       wanted = false; attempt++; resetVideoConnection();
     }
@@ -203,29 +239,40 @@ export function initMedia($, { onLayout = () => {} } = {}) {
         const index = video.seekable.length - 1;
         video.currentTime = Math.max(video.seekable.start(index), video.seekable.end(index) - 2);
       }
-      await video.play();
-      if (token === attempt && wanted) { status('영상 재생 중'); mediaSession(); updateControls(); }
+      try { await video.play(); }
+      catch (error) {
+        if (token !== attempt) return;
+        if (!automatic || error.name !== 'NotAllowedError' || video.muted) throw error;
+        video.muted = true; updateControls();
+        await video.play();
+      }
+      if (token === attempt && wanted) { status(playingStatus()); mediaSession(); updateControls(); }
     } catch (error) {
       if (token !== attempt) return;
       failure(error.name === 'NotAllowedError' ? '재생이 차단되었습니다. 영상 재생을 다시 누르세요.' : '영상 재생 실패 · 다시 시도하세요.');
     }
   }
   function setSource(next) {
-    const valid = next?.onAir && next.audioUrl ? next : null;
+    selectedChannel = next || null;
+    const valid = isPlayableChannel(next) ? next : null;
     const key = valid ? JSON.stringify([valid.id, valid.audioUrl, valid.videoSources]) : '';
-    if (key === sourceKey) { channel = valid; return; }
-    const resume = wanted && !panel.hidden;
+    if (key === sourceKey) {
+      channel = valid;
+      if (!valid) { audio.setSource('', unavailableMessage()); status(unavailableMessage()); }
+      updateControls(); return;
+    }
+    const resume = videoEnabled;
     const wasVideo = !panel.hidden;
     attempt++; wanted = false; resetVideoConnection();
     channel = valid; sourceKey = key; released = false;
-    audio.setSource(valid?.audioUrl || '');
+    audio.setSource(valid?.audioUrl || '', unavailableMessage());
     populateQuality(valid?.videoSources?.map(source => source.height) || []);
-    if (!valid) { stopVideo(); status('현재 방송 중인 채널을 선택하세요.'); }
+    if (!valid) { stopVideo({ preservePreference: true }); status(unavailableMessage()); }
     else {
       if (wasVideo) { panel.hidden = false; onLayout(); }
       status(wasVideo ? '영상 채널 변경 중' : '영상 대기');
       prepare();
-      if (resume) playVideo();
+      if (resume) playVideo({ automatic: true });
     }
     updateControls();
   }
@@ -318,27 +365,37 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   $('fullscreen-toggle').onclick = toggleFullscreen;
   $('fullscreen-exit').onclick = exitFullscreen;
   $('pip-toggle').onclick = togglePip;
+  for (const id of ['video-sound', 'fullscreen-sound']) $(id).onclick = () => {
+    if (!channel || panel.hidden) return;
+    video.muted = !video.muted;
+    if (wanted && !video.paused) status(playingStatus());
+    updateControls();
+  };
   $('caption-layout').onchange = () => {
     for (const layout of ['overlay', 'split', 'off']) shell.classList.toggle(`caption-layout-${layout}`, $('caption-layout').value === layout);
     $('fullscreen-captions').scrollTop = $('fullscreen-captions').scrollHeight;
   };
   $('fullscreen-play').onclick = () => {
     if (video.paused) playVideo();
-    else { wanted = false; attempt++; video.pause(); stopLoading(); status('영상 일시정지'); }
+    else { saveVideoPreference(false); wanted = false; attempt++; video.pause(); stopLoading(); status('영상 일시정지'); }
     updateControls(); revealControls();
   };
   video.addEventListener('playing', () => {
     if (!wanted) { video.pause(); return; }
-    status('영상 재생 중'); updateControls(); mediaSession(); revealControls();
+    status(playingStatus()); updateControls(); mediaSession(); revealControls();
   });
   video.addEventListener('pause', () => {
     if (!video.paused) return;
-    if (wanted) { wanted = false; attempt++; stopLoading(); status('영상 일시정지'); }
+    if (wanted) { saveVideoPreference(false); wanted = false; attempt++; stopLoading(); status('영상 일시정지'); }
     updateControls(); if (!panel.hidden) mediaSession();
   });
   video.addEventListener('waiting', () => { if (wanted) status('영상 버퍼링 중'); });
   video.addEventListener('loadedmetadata', updateControls);
   video.addEventListener('loadeddata', updateControls);
+  video.addEventListener('volumechange', () => {
+    if (wanted && !video.paused) status(playingStatus());
+    updateControls();
+  });
   video.addEventListener('resize', () => { if (!player) showQuality(video.videoHeight); });
   video.addEventListener('ended', () => failure('방송 영상 종료'));
   video.addEventListener('error', () => { if (video.error && !panel.hidden) { prepared = ''; failure('영상 연결 실패 · 다시 시도하세요.'); } });
@@ -346,19 +403,23 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   for (const name of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(name, fullscreenChanged);
   for (const name of ['pointermove', 'pointerdown', 'touchstart', 'keydown']) shell.addEventListener(name, revealControls, { passive: true });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && expanded) exitFullscreen(); });
-  window.addEventListener('pagehide', () => { stopVideo(); audio.suspend(); });
-  window.addEventListener('pageshow', event => { if (event.persisted) stopVideo(); });
+  window.addEventListener('pagehide', () => { stopVideo({ preservePreference: true }); audio.suspend(); });
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    stopVideo({ preservePreference: true }); audio.suspend();
+    if (videoEnabled && channel) playVideo({ automatic: true });
+  });
   if ('mediaSession' in navigator) {
     try {
       navigator.mediaSession.setActionHandler('play', () => panel.hidden ? audio.play() : playVideo());
       navigator.mediaSession.setActionHandler('pause', () => {
         if (panel.hidden) audio.pause();
-        else { wanted = false; attempt++; video.pause(); stopLoading(); updateControls(); }
+        else { saveVideoPreference(false); wanted = false; attempt++; video.pause(); stopLoading(); updateControls(); }
       });
       navigator.mediaSession.setActionHandler('stop', () => { audio.pause(); stopVideo(); });
     } catch {}
   }
   // Presentation state belongs to this visit, including browser-restored pages.
-  stopVideo(); setCaptions([]);
+  stopVideo({ preservePreference: true }); setCaptions([]);
   return { setSource, setCaptions, stop: () => { audio.pause(); stopVideo(); } };
 }

@@ -5,17 +5,18 @@ import { initMedia } from '../media.mjs';
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function startVideo($) { $('video-toggle').checked = true; return $('video-toggle').onchange(); }
 const channel = id => ({ id, name: `위원회 ${id}`, onAir: true,
+  source: `wss://captions.test/${id}`,
   audioUrl: `https://w-assembly.hscdn.com/assembly/${id}_240p/playlist.m3u8`,
   videoSources: [240, 480, 720, 1080].map(height => ({ height,
     url: `https://w-assembly.hscdn.com/assembly/${id}_${height}p/playlist.m3u8` })),
 });
 
-function setup(t, { safari = false, delayed = false, mobile = false, restoredPip = false } = {}) {
-  const nodes = {}, players = [], scripts = [], docEvents = {}, winEvents = {}, originals = new Map(), saved = new Map();
+function setup(t, { safari = false, delayed = false, mobile = false, restoredPip = false, savedEntries = [] } = {}) {
+  const nodes = {}, players = [], scripts = [], docEvents = {}, winEvents = {}, originals = new Map(), saved = new Map(savedEntries);
   const element = () => {
     const classes = new Set(), events = {};
     return { value: '', textContent: '', hidden: false, disabled: false, checked: false, children: [], attributes: {},
-      src: '', buffered: { length: 0 }, readyState: 2, paused: true, seekable: { length: 0 }, scrollHeight: 300, clientHeight: 100, scrollTop: 200,
+      src: '', buffered: { length: 0 }, readyState: 2, paused: true, muted: false, seekable: { length: 0 }, scrollHeight: 300, clientHeight: 100, scrollTop: 200,
       classList: { contains: value => classes.has(value), add: value => classes.add(value), remove: value => classes.delete(value),
         toggle(value, force) { if (force ?? !classes.has(value)) classes.add(value); else classes.delete(value); } },
       contains() { return false; },
@@ -54,7 +55,7 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
   $('media-shell').requestFullscreen = async () => { document.fullscreenElement = $('media-shell'); docEvents.fullscreenchange?.(); };
   $('broadcast-video').requestPictureInPicture = async () => { document.pictureInPictureElement = $('broadcast-video'); $('broadcast-video').emit('enterpictureinpicture'); };
   if (restoredPip) document.pictureInPictureElement = $('broadcast-video');
-  const window = { Hls: delayed ? undefined : Hls, localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); } },
+  const window = { Hls: delayed ? undefined : Hls, localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); }, removeItem(key) { saved.delete(key); } },
     setTimeout() { return 1; }, clearTimeout() {}, addEventListener(name, fn) { winEvents[name] = fn; } };
   for (const [name, value] of Object.entries({ document, window, navigator: { userAgent: mobile ? (safari ? 'iPhone Version/18 Safari' : 'Android Chrome') : safari ? 'Version/18 Safari' : 'Chrome' } })) {
     originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -149,23 +150,22 @@ test(`${safari ? 'Safari PIP' : '표준 PIP'}: 다른 탭 재생으로 종료된
   assert.equal(video.playCalls, calls + 1);
   assert.equal(video.paused, false); assert.equal($('media-panel').hidden, false);
   assert.equal($('pip-toggle').attributes['aria-pressed'], 'false');
-  assert.deepEqual([...saved.keys()], ['assembly-caption-audio-enabled'], 'PIP 설정은 저장하지 않는다');
+  assert.deepEqual([...saved.keys()], ['assembly-caption-video-enabled'], '영상 선택만 기억하고 오디오와 PIP 상태는 저장하지 않는다');
 });
 }
 
-test('접속 및 뒤로가기로 페이지를 복원할 때 PIP와 영상 재생 상태를 초기화한다', async t => {
+test('접속 및 뒤로가기로 페이지를 복원할 때 PIP는 초기화하고 영상은 인라인으로 이어 재생한다', async t => {
   const { $, controller, document, winEvents } = setup(t, { restoredPip: true });
   assert.equal(document.pictureInPictureElement, null);
   assert.equal($('pip-toggle').attributes['aria-pressed'], 'false');
   controller.setSource(channel('19')); await settle(); await startVideo($);
   await $('pip-toggle').onclick();
   winEvents.pageshow({ persisted: true });
+  await settle();
   assert.equal(document.pictureInPictureElement, null);
-  assert.equal($('broadcast-video').paused, true);
-  assert.equal($('media-panel').hidden, true);
-  assert.equal($('video-toggle').checked, false);
-  await startVideo($);
   assert.equal($('broadcast-video').paused, false);
+  assert.equal($('media-panel').hidden, false);
+  assert.equal($('video-toggle').checked, true);
   assert.equal(document.pictureInPictureElement, null);
 });
 
@@ -221,13 +221,111 @@ test('라이브러리 준비 중 채널·모드를 바꿔도 오래된 영상 �
   assert.equal($('broadcast-audio').paused, false);
 });
 
-test('페이지를 떠날 때 재생을 멈추되 새로고침 후 오디오 켬 선호는 보존한다', async t => {
+test('페이지를 떠나거나 복원할 때 오디오를 끄고 켬 상태를 저장하지 않는다', async t => {
   const { $, controller, winEvents, saved } = setup(t);
   controller.setSource(channel('19')); await settle();
   $('audio-toggle').checked = true; await $('audio-toggle').onchange();
   winEvents.pagehide();
   assert.equal($('broadcast-audio').paused, true);
-  assert.equal(saved.get('assembly-caption-audio-enabled'), 'true');
+  assert.equal($('audio-toggle').checked, false);
+  assert.equal(saved.has('assembly-caption-audio-enabled'), false);
+  winEvents.pageshow({ persisted: true });
+  assert.equal($('broadcast-audio').paused, true);
+  assert.equal($('audio-toggle').checked, false);
+});
+
+for (const safari of [false, true]) {
+test(`${safari ? 'Safari' : 'HLS.js'}: 영상 선택은 복원하고 오디오는 끄며 자동 재생 차단 시 음소거로 재시도한다`, async t => {
+  const { $, controller, saved, document } = setup(t, { safari, savedEntries: [
+    ['assembly-caption-video-enabled', 'true'], ['assembly-caption-audio-enabled', 'true'],
+  ] });
+  const video = $('broadcast-video'), originalPlay = video.play, mutedAttempts = [];
+  video.play = function () {
+    mutedAttempts.push(this.muted);
+    if (!this.muted) return Promise.reject(Object.assign(Error('blocked'), { name: 'NotAllowedError' }));
+    return originalPlay.call(this);
+  };
+  controller.setSource(channel('25')); await settle(); await settle();
+  assert.deepEqual(mutedAttempts, [false, true]);
+  assert.equal(video.paused, false); assert.equal(video.muted, true);
+  assert.equal($('video-toggle').checked, true);
+  assert.equal($('audio-toggle').checked, false); assert.equal($('broadcast-audio').playCalls, 0);
+  assert.equal(saved.has('assembly-caption-audio-enabled'), false);
+  assert.equal($('video-sound').textContent, '소리 켜기');
+  assert.equal($('fullscreen-sound').textContent, '소리 켜기');
+  assert.equal(document.pictureInPictureElement, null);
+  $('video-sound').onclick();
+  assert.equal(video.muted, false); assert.equal($('video-sound').textContent, '음소거');
+  $('fullscreen-sound').onclick(); assert.equal(video.muted, true);
+  $('video-toggle').checked = false; $('video-toggle').onchange();
+  assert.equal(saved.get('assembly-caption-video-enabled'), 'false');
+});
+}
+
+test('영상의 음소거 자동 재생도 차단되면 켬으로 표시하지 않고 수동 재생을 안내한다', async t => {
+  const { $, controller, players } = setup(t, { savedEntries: [['assembly-caption-video-enabled', 'true']] });
+  const attempts = [];
+  $('broadcast-video').play = function () {
+    attempts.push(this.muted); return Promise.reject(Object.assign(Error('blocked'), { name: 'NotAllowedError' }));
+  };
+  controller.setSource(channel('25')); await settle(); await settle();
+  assert.deepEqual(attempts, [false, true]);
+  assert.equal($('video-toggle').checked, false);
+  assert.equal($('audio-toggle').checked, false);
+  assert.equal($('pip-toggle').disabled, true);
+  assert.match($('media-status').textContent, /재생이 차단/);
+  assert.equal(players.findLast(player => player.media === $('broadcast-video')).loading, false);
+});
+
+test('재생 주소가 없을 때만 미디어를 비활성화하고 주소가 확인되면 영상 선택을 복원한다', async t => {
+  const { $, controller, players, saved } = setup(t, { savedEntries: [['assembly-caption-video-enabled', 'true']] });
+  assert.equal($('audio-toggle').disabled, true);
+  assert.equal($('video-toggle').disabled, true);
+  for (const statusText of ['생중계 없음', '10:00 감사예정', '감사중지', '감사종료', '20:30 계속예정']) {
+    for (const onAir of [false, true]) {
+      controller.setSource({ ...channel('25'), onAir, statusText, audioUrl: '' });
+      await settle();
+      assert.equal($('audio-toggle').disabled, true, statusText);
+      assert.equal($('video-toggle').disabled, true, statusText);
+      assert.equal($('pip-toggle').disabled, true);
+      assert.equal($('fullscreen-toggle').disabled, true);
+      assert.equal($('video-quality').disabled, true);
+      assert.ok($('audio-status').textContent.includes(statusText));
+      assert.equal($('broadcast-video').playCalls, 0);
+      assert.equal($('broadcast-audio').playCalls, 0);
+    }
+  }
+  assert.equal(players.length, 0, '재생 불가 상태에서는 연결을 준비하지 않는다');
+  controller.setSource({ ...channel('25'), source: null, onAir: false, statusText: '20:30 계속예정' });
+  await settle(); await settle();
+  assert.equal($('audio-toggle').disabled, false, '자막 주소와 ON AIR 표시 없이 미디어 주소만으로 재생할 수 있다');
+  assert.equal($('video-toggle').checked, true);
+  controller.setSource(channel('25')); await settle(); await settle();
+  assert.equal($('video-toggle').disabled, false);
+  assert.equal($('video-toggle').checked, true);
+  assert.equal($('broadcast-video').paused, false);
+  assert.equal($('broadcast-audio').paused, true);
+  const previous = players.findLast(player => player.media === $('broadcast-video'));
+  controller.setSource({ ...channel('25'), onAir: false, statusText: '감사중지' }); await settle();
+  assert.equal($('broadcast-video').paused, false, '상태가 바뀌어도 주소가 있으면 계속 재생한다');
+  controller.setSource({ ...channel('25'), onAir: false, statusText: '감사중지', audioUrl: '' }); await settle();
+  assert.equal($('broadcast-video').paused, true);
+  assert.equal($('video-toggle').disabled, true);
+  assert.equal($('audio-toggle').disabled, true);
+  assert.equal(previous.destroyed, true);
+  assert.equal(saved.get('assembly-caption-video-enabled'), 'true');
+  controller.setSource(channel('25')); await settle(); await settle();
+  assert.equal($('broadcast-video').paused, false);
+  assert.equal($('broadcast-audio').playCalls, 0);
+  $('audio-toggle').checked = true; await $('audio-toggle').onchange(); await settle();
+  assert.equal(saved.get('assembly-caption-video-enabled'), 'false', '오디오로 전환하면 영상 자동 복원 선택을 해제한다');
+  controller.setSource({ ...channel('25'), onAir: false, statusText: '감사종료' });
+  assert.equal($('broadcast-audio').paused, false, 'ON AIR 종료만으로 미디어를 끊지 않는다');
+  controller.setSource({ ...channel('25'), onAir: false, statusText: '감사종료', audioUrl: '' });
+  assert.equal($('broadcast-audio').paused, true);
+  controller.setSource(channel('25')); await settle();
+  assert.equal($('audio-toggle').checked, false, '방송이 재개되어도 오디오는 자동으로 켜지지 않는다');
+  assert.equal($('video-toggle').checked, false);
 });
 
 for (const safari of [false, true]) {
