@@ -141,7 +141,7 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   await nodes['refresh-channels'].onclick(); await settle(); await settle(); flush();
   assert.equal(nodes.channel.disabled, false, 'ON AIR가 없어도 파싱된 채널 목록은 사용할 수 있다');
   assert.equal(nodes.channel.value, '25');
-  assert.match(nodes.channel.children.find(option => option.value === '25').textContent, /○ 법사위 · 산회 · 국정감사 종료/);
+  assert.match(nodes.channel.children.find(option => option.value === '25').textContent, /✓ 법사위 · 산회 · 국정감사 종료/);
   assert.match(nodes['channel-refresh-status'].textContent, /현재 ON AIR 없음 · 오늘 편성 채널 1개/);
   const noSchedule = nodes.channel.children.find(option => option.value === '33');
   assert.ok(noSchedule, '오늘 편성이 없는 위원회도 과거 기록을 위해 보여준다');
