@@ -52,11 +52,19 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-function event(response, name, value, cursor) {
+function formatEvent(name, value, cursor) {
+  return `${cursor === undefined ? '' : `id: ${cursor}\n`}event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
+}
+
+function writeEvent(response, payload) {
   if (response.destroyed || response.writableEnded) return false;
   if (response.writableLength > 1024 * 1024) { response.destroy(); return false; }
-  response.write(`${cursor === undefined ? '' : `id: ${cursor}\n`}event: ${name}\ndata: ${JSON.stringify(value)}\n\n`);
+  response.write(payload);
   return true;
+}
+
+function event(response, name, value, cursor) {
+  return writeEvent(response, formatEvent(name, value, cursor));
 }
 
 async function write(response, chunk) {
@@ -126,12 +134,18 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
     heartbeat.unref?.();
   }
   const sendCaption = (channelId, item) => {
+    let payload = null;
     for (const sub of subscribers) {
-      if (sub.channelId === channelId && sub.day === item.day) event(sub.response, 'caption', item, item.cursor);
+      if (sub.channelId === channelId && sub.day === item.day) {
+        writeEvent(sub.response, payload ??= formatEvent('caption', item, item.cursor));
+      }
     }
   };
   const sendStatus = (channelId, value) => {
-    for (const sub of subscribers) if (sub.channelId === channelId) event(sub.response, 'status', value);
+    let payload = null;
+    for (const sub of subscribers) {
+      if (sub.channelId === channelId) writeEvent(sub.response, payload ??= formatEvent('status', value));
+    }
   };
   const collector = liveListUrl ? null : new CaptionCollector({ source, store, WebSocketClass,
     onEvent: item => sendCaption('default', item),
@@ -304,7 +318,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     gaHostname: process.env.GA_HOSTNAME || 'soju.day' });
   const address = await app.listen(Number(process.env.PORT || 3000), process.env.HOST || '0.0.0.0');
   console.log(`방송 채널: ${app.channelManager.snapshot().channels.filter(channel => channel.onAir).map(channel => channel.name).join(', ') || 'ON AIR 없음'}`);
-  console.log(`자막 서버 실행: http://0.0.0.0:${address.port} (자막 수집은 브라우저 접속과 무관하게 계속됩니다.)`);
+  const listenHost = address.family === 'IPv6' ? `[${address.address}]` : address.address;
+  console.log(`자막 서버 실행: http://${listenHost}:${address.port} (자막 수집은 브라우저 접속과 무관하게 계속됩니다.)`);
   let closing = false;
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
     if (closing) return; closing = true;
