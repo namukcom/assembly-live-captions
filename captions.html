@@ -50,7 +50,11 @@ article:first-child{padding-top:24px}article:last-child{padding-bottom:24px}
 #count{font-size:12px;color:#9dacbf}
 .top-panel{position:fixed;z-index:20;left:0;right:0;top:0;padding:12px max(16px,env(safe-area-inset-right,0px)) 12px max(16px,env(safe-area-inset-left,0px));background:#0c111b;border-bottom:1px solid #2b374c;box-shadow:0 6px 24px #0003}
 .top-inner{max-width:1160px;margin:auto}
-.top-panel h1{font-size:20px;margin:0 0 8px}
+.title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.top-panel h1{flex:0 0 auto;font-size:20px;margin:0;white-space:nowrap}
+.media-source-note{min-width:0;display:flex;justify-content:flex-end;gap:6px;font-size:11px;line-height:1.2;color:#a9b8cb;text-align:right}
+.media-source-note span{white-space:nowrap}
+.media-source-note span+span::before{content:'· ';}
 .channel-bar{display:grid;grid-template-columns:minmax(0,1fr) 155px 46px;gap:6px 12px;align-items:end;padding:12px;background:#111a28;border:1px solid #2b374c;border-radius:12px}
 .channel-bar label{min-width:0;font-size:14px;font-weight:700}.channel-bar select{display:block;width:100%;min-height:46px;margin-top:5px;font-size:16px}
 .channel-date input{display:block;width:100%;min-width:0;min-height:46px;margin-top:5px;font-size:14px;padding:9px 6px}
@@ -65,6 +69,7 @@ body.chrome-hidden .controls{transform:translateY(100%);opacity:0;pointer-events
 body.chrome-hidden #caption-scroller{top:var(--video-height,0px);bottom:0}
 @media(max-width:850px){
   html{--toolbar-height:340px}
+  .media-source-note{display:block;font-size:10px}.media-source-note span{display:block}.media-source-note span+span::before{content:none}
   .toolbar-top{grid-template-columns:minmax(0,1fr);gap:8px}
   .playback-row{min-height:54px;padding:5px 8px}
   .playback-row{flex-direction:column;align-items:stretch;gap:5px}
@@ -77,7 +82,8 @@ body.chrome-hidden #caption-scroller{top:var(--video-height,0px);bottom:0}
   .control-field select,.control-field input[type=search],.control-field input[type=date]{margin-top:0}
 }
 @media(max-width:480px){
-  .top-panel{padding:8px 12px}.top-panel h1{font-size:18px;margin-bottom:6px}.channel-bar{padding:9px}
+  .top-panel{padding:8px 12px}.top-panel h1{font-size:18px}.title-row{gap:8px;margin-bottom:6px}.channel-bar{padding:9px}
+  .media-source-note{font-size:9px}
   .caption-inner{padding:12px}
   article{font-size:18px;padding:10px 16px}
   .controls{padding-left:12px;padding-right:12px}
@@ -135,7 +141,7 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
  .fullscreen-controls{gap:5px!important}.fullscreen-controls button,.fullscreen-controls select{padding:6px;font-size:13px}
 }
 @media(max-height:500px){
- .top-panel h1,.channel-bar #channel-refresh-status{display:none}
+ .title-row,.channel-bar #channel-refresh-status{display:none}
  .top-panel{padding:5px 12px}.channel-bar{padding:5px 8px}
  .controls{padding-top:6px;padding-bottom:max(6px,env(safe-area-inset-bottom))}.controls-inner{gap:6px}
  .playback-row{min-height:44px}
@@ -150,7 +156,10 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
 <body>
 <header class="top-panel">
 <div class="top-inner">
-  <h1>국회 생중계 자막</h1>
+  <div class="title-row">
+    <h1>국회 생중계 자막</h1>
+    <small class="media-source-note" title="영상·음성은 국회 인터넷의사중계시스템에서 직접 재생하며, 이 서버에는 저장하지 않습니다."><span>국회 인터넷의사중계시스템</span><span>영상·음성 직접 재생 · 서버 미저장</span></small>
+  </div>
   <section class="channel-bar" aria-label="위원회 채널 선택">
     <label>위원회 채널<select id="channel" aria-label="위원회 채널"></select></label>
     <label class="channel-date">기록 날짜<input id="date" type="date" aria-label="기록 날짜"></label>
