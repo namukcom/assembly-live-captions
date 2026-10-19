@@ -10,7 +10,7 @@ const channel = id => ({ id, name: `위원회 ${id}`, onAir: true,
     url: `https://w-assembly.hscdn.com/assembly/${id}_${height}p/playlist.m3u8` })),
 });
 
-function setup(t, { safari = false, delayed = false, mobile = false } = {}) {
+function setup(t, { safari = false, delayed = false, mobile = false, restoredPip = false } = {}) {
   const nodes = {}, players = [], scripts = [], docEvents = {}, winEvents = {}, originals = new Map(), saved = new Map();
   const element = () => {
     const classes = new Set(), events = {};
@@ -26,7 +26,7 @@ function setup(t, { safari = false, delayed = false, mobile = false } = {}) {
       canPlayType() { return safari ? 'maybe' : ''; },
       playCalls: 0, play() { this.playCalls++; this.buffered.length = 1; this.paused = false; this.emit('playing'); return Promise.resolve(); },
       pause() { this.paused = true; this.emit('pause'); },
-      load() { this.buffered.length = 0; }, removeAttribute(name) { if (name === 'src') this.src = ''; },
+      loadCalls: 0, load() { this.loadCalls++; this.buffered.length = 0; }, removeAttribute(name) { if (name === 'src') this.src = ''; },
     };
   };
   const $ = id => nodes[id] ??= element();
@@ -53,6 +53,7 @@ function setup(t, { safari = false, delayed = false, mobile = false } = {}) {
   };
   $('media-shell').requestFullscreen = async () => { document.fullscreenElement = $('media-shell'); docEvents.fullscreenchange?.(); };
   $('broadcast-video').requestPictureInPicture = async () => { document.pictureInPictureElement = $('broadcast-video'); $('broadcast-video').emit('enterpictureinpicture'); };
+  if (restoredPip) document.pictureInPictureElement = $('broadcast-video');
   const window = { Hls: delayed ? undefined : Hls, localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); } },
     setTimeout() { return 1; }, clearTimeout() {}, addEventListener(name, fn) { winEvents[name] = fn; } };
   for (const [name, value] of Object.entries({ document, window, navigator: { userAgent: mobile ? (safari ? 'iPhone Version/18 Safari' : 'Android Chrome') : safari ? 'Version/18 Safari' : 'Chrome' } })) {
@@ -116,6 +117,74 @@ test('기본 전체화면이 거절되면 자막을 유지하는 확대 보기�
   $('media-shell').requestFullscreen = async () => { throw Error('not supported'); };
   await $('fullscreen-toggle').onclick(); assert.equal($('media-shell').classList.contains('is-expanded'), true);
   docEvents.keydown({ key: 'Escape' }); assert.equal($('media-shell').classList.contains('is-expanded'), false);
+});
+
+for (const safari of [false, true]) {
+test(`${safari ? 'Safari PIP' : '표준 PIP'}: 다른 탭 재생으로 종료된 뒤 새 연결로 인라인 재생한다`, async t => {
+  const { $, controller, players, document, saved } = setup(t, { safari });
+  const video = $('broadcast-video');
+  if (safari) {
+    document.pictureInPictureEnabled = false;
+    video.webkitPresentationMode = 'inline';
+    video.webkitSupportsPresentationMode = () => true;
+    video.webkitSetPresentationMode = mode => {
+      video.webkitPresentationMode = mode; video.emit('webkitpresentationmodechanged');
+    };
+  }
+  controller.setSource(channel('19')); await settle(); await startVideo($);
+  await $('pip-toggle').onclick();
+  const previous = players.findLast(player => player.media === video), loads = video.loadCalls;
+  video.pause();
+  if (safari) video.webkitSetPresentationMode('inline');
+  else await document.exitPictureInPicture();
+  assert.equal($('pip-toggle').attributes['aria-pressed'], 'false');
+  assert.equal($('video-toggle').checked, false, '브라우저가 중지한 재생 상태를 스위치에도 반영한다');
+  const calls = video.playCalls;
+  await startVideo($); await settle();
+  assert.ok(video.loadCalls > loads, 'PIP 종료 뒤에는 영상 연결을 새로 준비한다');
+  if (previous) {
+    assert.equal(previous.destroyed, true);
+    assert.notEqual(players.findLast(player => player.media === video), previous);
+  }
+  assert.equal(video.playCalls, calls + 1);
+  assert.equal(video.paused, false); assert.equal($('media-panel').hidden, false);
+  assert.equal($('pip-toggle').attributes['aria-pressed'], 'false');
+  assert.deepEqual([...saved.keys()], ['assembly-caption-audio-enabled'], 'PIP 설정은 저장하지 않는다');
+});
+}
+
+test('접속 및 뒤로가기로 페이지를 복원할 때 PIP와 영상 재생 상태를 초기화한다', async t => {
+  const { $, controller, document, winEvents } = setup(t, { restoredPip: true });
+  assert.equal(document.pictureInPictureElement, null);
+  assert.equal($('pip-toggle').attributes['aria-pressed'], 'false');
+  controller.setSource(channel('19')); await settle(); await startVideo($);
+  await $('pip-toggle').onclick();
+  winEvents.pageshow({ persisted: true });
+  assert.equal(document.pictureInPictureElement, null);
+  assert.equal($('broadcast-video').paused, true);
+  assert.equal($('media-panel').hidden, true);
+  assert.equal($('video-toggle').checked, false);
+  await startVideo($);
+  assert.equal($('broadcast-video').paused, false);
+  assert.equal(document.pictureInPictureElement, null);
+});
+
+test('페이지를 떠난 뒤 완료된 PIP 요청은 창을 다시 열어 두지 않는다', async t => {
+  const { $, controller, document, winEvents } = setup(t);
+  controller.setSource(channel('19')); await settle(); await startVideo($);
+  let finish;
+  $('broadcast-video').requestPictureInPicture = () => new Promise(resolve => {
+    finish = () => {
+      document.pictureInPictureElement = $('broadcast-video');
+      $('broadcast-video').emit('enterpictureinpicture'); resolve();
+    };
+  });
+  const entering = $('pip-toggle').onclick();
+  winEvents.pagehide(); finish(); await entering;
+  assert.equal(document.pictureInPictureElement, null);
+  assert.equal($('pip-toggle').attributes['aria-pressed'], 'false');
+  assert.equal($('media-panel').hidden, true);
+  assert.equal($('broadcast-video').paused, true);
 });
 
 test('영상 모드에서 채널 변경을 이어 재생하고 방송 종료 때 재생·PIP·플레이어를 정리한다', async t => {

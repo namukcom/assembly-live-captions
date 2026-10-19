@@ -6,6 +6,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   let version = 0, preparingVersion = -1, attempt = 0, wanted = false, reloadManifest = false;
   let quality = 'auto', expanded = false, chromeTimer = null, captionKey = '';
   let released = false, orientationManaged = false, orientationAttempt = 0;
+  let pipActive = false, reloadAfterPip = false;
   const audio = initAudio($, { beforePlay: () => stopVideo() });
 
   function status(message) { $('media-status').textContent = message; }
@@ -51,6 +52,14 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     }
     return Promise.resolve();
   }
+  function pipChanged() {
+    const active = inPip();
+    // A browser can close PIP when another tab takes over media playback.
+    // Reattach the video on the next play instead of reusing its old output.
+    if (pipActive && !active) reloadAfterPip = true;
+    pipActive = active;
+    updateControls(); onLayout();
+  }
   function fullscreenChanged() {
     expanded = isFullscreen() || shell.classList.contains('is-expanded');
     document.body.classList.toggle('media-expanded', expanded);
@@ -70,12 +79,16 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     }
     fullscreenChanged();
   }
-  function stopVideo() {
-    attempt++; version++; wanted = false; released = true; panel.hidden = true;
+  function resetVideoConnection() {
+    version++;
     video.pause();
     const previous = player; player = null; previous?.destroy();
-    prepared = ''; reloadManifest = false;
+    prepared = ''; reloadManifest = false; reloadAfterPip = false;
     video.removeAttribute('src'); video.load();
+  }
+  function stopVideo() {
+    attempt++; wanted = false; released = true; panel.hidden = true; pipActive = false;
+    resetVideoConnection();
     exitPip(); exitFullscreen();
     status('영상 정지'); updateControls(); onLayout();
   }
@@ -169,6 +182,9 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   }
   async function playVideo() {
     if (!channel) return;
+    if (reloadAfterPip) {
+      wanted = false; attempt++; resetVideoConnection();
+    }
     audio.reset(); released = false;
     panel.hidden = false; wanted = true;
     const token = ++attempt;
@@ -200,9 +216,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     if (key === sourceKey) { channel = valid; return; }
     const resume = wanted && !panel.hidden;
     const wasVideo = !panel.hidden;
-    attempt++; wanted = false; version++; video.pause();
-    player?.destroy(); player = null; prepared = ''; reloadManifest = false;
-    video.removeAttribute('src'); video.load();
+    attempt++; wanted = false; resetVideoConnection();
     channel = valid; sourceKey = key; released = false;
     audio.setSource(valid?.audioUrl || '');
     populateQuality(valid?.videoSources?.map(source => source.height) || []);
@@ -260,12 +274,15 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     await requestLandscape();
   }
   async function togglePip() {
+    const token = version;
     try {
       if (inPip()) await exitPip();
       else {
         if (expanded) await exitFullscreen();
         if (video.requestPictureInPicture && document.pictureInPictureEnabled) await video.requestPictureInPicture();
         else video.webkitSetPresentationMode('picture-in-picture');
+        // Do not let a pending browser request restore PIP after leaving the page.
+        if (token !== version || panel.hidden) await exitPip();
       }
     } catch { status('PIP 전환 실패 · 브라우저 설정을 확인하세요.'); }
     updateControls();
@@ -314,18 +331,23 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     if (!wanted) { video.pause(); return; }
     status('영상 재생 중'); updateControls(); mediaSession(); revealControls();
   });
-  video.addEventListener('pause', () => { updateControls(); if (!panel.hidden) mediaSession(); });
+  video.addEventListener('pause', () => {
+    if (!video.paused) return;
+    if (wanted) { wanted = false; attempt++; stopLoading(); status('영상 일시정지'); }
+    updateControls(); if (!panel.hidden) mediaSession();
+  });
   video.addEventListener('waiting', () => { if (wanted) status('영상 버퍼링 중'); });
   video.addEventListener('loadedmetadata', updateControls);
   video.addEventListener('loadeddata', updateControls);
   video.addEventListener('resize', () => { if (!player) showQuality(video.videoHeight); });
   video.addEventListener('ended', () => failure('방송 영상 종료'));
   video.addEventListener('error', () => { if (video.error && !panel.hidden) { prepared = ''; failure('영상 연결 실패 · 다시 시도하세요.'); } });
-  for (const name of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged']) video.addEventListener(name, updateControls);
+  for (const name of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged']) video.addEventListener(name, pipChanged);
   for (const name of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(name, fullscreenChanged);
   for (const name of ['pointermove', 'pointerdown', 'touchstart', 'keydown']) shell.addEventListener(name, revealControls, { passive: true });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && expanded) exitFullscreen(); });
   window.addEventListener('pagehide', () => { stopVideo(); audio.suspend(); });
+  window.addEventListener('pageshow', event => { if (event.persisted) stopVideo(); });
   if ('mediaSession' in navigator) {
     try {
       navigator.mediaSession.setActionHandler('play', () => panel.hidden ? audio.play() : playVideo());
@@ -336,6 +358,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
       navigator.mediaSession.setActionHandler('stop', () => { audio.pause(); stopVideo(); });
     } catch {}
   }
-  updateControls(); setCaptions([]);
+  // Presentation state belongs to this visit, including browser-restored pages.
+  stopVideo(); setCaptions([]);
   return { setSource, setCaptions, stop: () => { audio.pause(); stopVideo(); } };
 }
