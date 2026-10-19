@@ -56,8 +56,8 @@ article:first-child{padding-top:24px}article:last-child{padding-bottom:24px}
 .media-source-note span{white-space:nowrap}
 .media-source-note span+span::before{content:'· ';}
 .channel-bar{display:grid;grid-template-columns:minmax(0,1fr) 155px 46px;gap:6px 12px;align-items:end;padding:12px;background:#111a28;border:1px solid #2b374c;border-radius:12px}
-.channel-bar label{min-width:0;font-size:14px;font-weight:700}.channel-bar select{display:block;width:100%;min-height:46px;margin-top:5px;font-size:16px}
-.channel-date input{display:block;width:100%;min-width:0;min-height:46px;margin-top:5px;font-size:14px;padding:9px 6px}
+.channel-bar label{min-width:0;font-size:14px;font-weight:700}.channel-bar select{display:block;width:100%;min-height:46px;margin-top:0;font-size:16px}
+.channel-date input{display:block;width:100%;min-width:0;min-height:46px;margin-top:0;font-size:14px;padding:9px 6px}
 .channel-bar button{min-height:46px;white-space:nowrap}.channel-bar #refresh-channels{display:grid;place-items:center;width:46px;padding:0;font-size:25px;line-height:1}.channel-bar #refresh-channels:disabled .refresh-icon{animation:refresh-spin .8s linear infinite}.channel-bar #channel-refresh-status{grid-column:1/-1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @keyframes refresh-spin{to{transform:rotate(360deg)}}
 #caption-scroller{position:fixed;z-index:1;left:0;right:0;top:var(--header-height,170px);bottom:var(--toolbar-height,230px);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;outline:none}
@@ -160,8 +160,8 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
     <small class="media-source-note" title="영상·음성은 국회 인터넷의사중계시스템에서 직접 재생하며, 이 서버에는 저장하지 않습니다."><span>국회 인터넷의사중계시스템</span><span>영상·음성 직접 재생 · 서버 미저장</span></small>
   </div>
   <section class="channel-bar" aria-label="위원회 채널 선택">
-    <label>위원회 채널<select id="channel" aria-label="위원회 채널"></select></label>
-    <label class="channel-date">기록 날짜<input id="date" type="date" aria-label="기록 날짜"></label>
+    <label><select id="channel" aria-label="위원회 채널"></select></label>
+    <label class="channel-date"><input id="date" type="date" aria-label="기록 날짜"></label>
     <button id="refresh-channels" aria-label="채널 새로고침" title="채널 새로고침"><span class="refresh-icon" aria-hidden="true">↻</span></button>
     <span id="channel-refresh-status" class="note" role="status" aria-live="polite">채널 목록 확인 중</span>
   </section>
