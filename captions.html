@@ -202,6 +202,7 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
     </div>
     <div class="fullscreen-controls" aria-label="전체화면 도구">
       <button id="fullscreen-play" aria-label="영상 일시정지">일시정지</button>
+      <button id="fullscreen-sound" aria-label="영상 음소거" aria-pressed="false" disabled>음소거</button>
       <select id="fullscreen-quality" aria-label="전체화면 영상 화질"><option value="auto">자동</option></select>
       <select id="caption-layout" aria-label="전체화면 자막 표시"><option value="overlay">자막 겹침</option><option value="split">자막 분할</option><option value="off">자막 끄기</option></select>
       <button id="fullscreen-exit">전체화면 종료</button>
@@ -245,6 +246,7 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
   </div>
   <div id="video-options" class="media-actions" aria-label="영상 재생 도구" hidden>
       <label class="quality-field"><select id="video-quality" aria-label="영상 화질" disabled><option value="auto">자동</option></select></label>
+      <button id="video-sound" aria-label="영상 음소거" aria-pressed="false" disabled>음소거</button>
       <button id="pip-toggle" aria-pressed="false" disabled title="지원하는 브라우저에서 영상 재생 후 사용할 수 있습니다">PIP</button>
       <button id="fullscreen-toggle" aria-pressed="false" disabled>전체화면</button>
   </div>

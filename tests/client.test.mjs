@@ -64,7 +64,7 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
       if (url === '/api/config') return { ok: true, json: async () => ({ today: '2026-10-14', channelRefreshMs: 30000 }) };
       if (url.startsWith('/api/channels')) return { ok: true, json: async () => ({ today: '2026-10-14', refreshedAt: '2026-10-14T08:00:00Z',
         channels: noOnAir ? [
-          { id: '25', name: '법사위', subject: '국정감사 종료', statusText: '산회', onAir: false, pageUrl: 'https://assembly.test/live?25' },
+          { id: '25', name: '법사위', subject: '국정감사 종료', statusText: '산회', onAir: false, audioUrl, pageUrl: 'https://assembly.test/live?25' },
           { id: '33', name: '복지위', subject: '오전 회의', statusText: '생중계 없음', onAir: false, pageUrl: 'https://assembly.test/live?33' },
         ] : [{ id: '45', name: '행안위', subject: '국정감사', statusText: '감사계속', onAir: true,
           source: 'wss://other.test', audioUrl: 'https://other.test/live.m3u8', collector: { state: 'connected' } },
@@ -148,6 +148,8 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   assert.equal(nodes.channel.children.at(-1).value, '33', '오늘 편성이 없는 채널은 목록 아래로 정렬한다');
   assert.notEqual(noSchedule.disabled, true, '방송이 없어도 과거 자막을 선택할 수 있다');
   assert.equal(nodes.connect.disabled, true, '종료 채널에서는 실시간 재생을 비활성화한다');
+  assert.equal(nodes['audio-toggle'].disabled, false, '종료 채널도 주소가 있으면 오디오를 사용할 수 있다');
+  assert.equal(nodes['video-toggle'].disabled, false, '자막 수신과 별개로 영상 주소가 있으면 재생할 수 있다');
   assert.equal(streams.at(-1).closed, true, '방송 종료 상태로 바뀌면 기존 실시간 연결을 닫는다');
 });
 

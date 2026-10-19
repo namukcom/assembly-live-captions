@@ -15,6 +15,9 @@ test('국회 생중계 응답에서 자막과 240p 오디오 주소를 만든다
   assert.equal(config.source, 'wss://smiai.webcast.go.kr:8091/aistt/beopsa/hls');
   assert.equal(config.audioUrl, 'https://w-assembly.hscdn.com/assembly/beopsa_240p/playlist.m3u8');
   assert.equal(config.broadcast.committee, '법제사법위원회');
+  const mediaOnly = parseBroadcastPage({ ...response, xsami: '' }, pageUrl);
+  assert.equal(mediaOnly.source, null);
+  assert.equal(mediaOnly.audioUrl, config.audioUrl, '자막 주소가 없어도 영상·오디오 주소를 가져온다');
 });
 
 test('허용된 국회 페이지를 JSON으로 불러오고 잘못된 원본 주소는 거부한다', async () => {

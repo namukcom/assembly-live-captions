@@ -16,16 +16,18 @@ export function loadHls() {
 // All media requests go from the client to the original broadcast, never through our server.
 export function initAudio($, { beforePlay = () => {} } = {}) {
   const audio = $('broadcast-audio');
-  const storageKey = 'assembly-caption-audio-enabled';
   let player = null, ready = false, warming = false, wanted = false, attempt = 0, preparedSource = '', sourceVersion = 0;
   let enabled = false, reloadManifest = false, released = false;
-  try { enabled = window.localStorage?.getItem(storageKey) === 'true'; } catch {}
-
-  function savePreference() {
-    try { window.localStorage?.setItem(storageKey, String(enabled)); } catch {}
+  let available = Boolean($('audio-url').value.trim());
+  // Playback belongs to this visit; discard the preference saved by older versions.
+  try { window.localStorage?.removeItem('assembly-caption-audio-enabled'); } catch {}
+  audio.pause();
+  function updateToggle() {
+    $('audio-toggle').checked = enabled && available;
+    $('audio-toggle').disabled = !available || warming;
   }
   function ui(message) {
-    $('audio-toggle').checked = enabled;
+    updateToggle();
     $('audio-status').textContent = message;
   }
   function mediaState(state) {
@@ -41,12 +43,13 @@ export function initAudio($, { beforePlay = () => {} } = {}) {
     attempt++; wanted = false; audio.pause(); stopLoading(); ui(message); mediaState('paused');
   }
   function turnOff(message = '오디오 일시정지') {
-    enabled = false; savePreference(); stopPlayback(message);
+    enabled = false; stopPlayback(message);
   }
   function turnOn() {
+    if (!available) { updateToggle(); return; }
     beforePlay();
     released = false;
-    enabled = true; savePreference(); ui(ready ? '오디오 연결 중' : '오디오 재생 준비 중'); return play();
+    enabled = true; ui(ready ? '오디오 연결 중' : '오디오 재생 준비 중'); return play();
   }
 
 
@@ -74,7 +77,7 @@ export function initAudio($, { beforePlay = () => {} } = {}) {
           current.on(Hls.Events.ERROR, (_event, data) => {
             if (player !== current || !data.fatal) return;
             ready = false;
-            stopPlayback(data.type === 'networkError' ? '방송 연결 실패 · 중계 중인지 확인하세요.' : '방송 음성 재생 실패 · 다시 시도하세요.');
+            turnOff(data.type === 'networkError' ? '방송 연결 실패 · 중계 중인지 확인하세요.' : '방송 음성 재생 실패 · 다시 시도하세요.');
             current.destroy(); player = null;
           });
           current.attachMedia(audio); current.loadSource(source.href);
@@ -85,14 +88,21 @@ export function initAudio($, { beforePlay = () => {} } = {}) {
       preparedSource = source.href; ready = true; ui(enabled ? '오디오 연결 중' : '오디오 대기');
     } catch (error) { if (version === sourceVersion) ui(error.message); }
     finally {
-      warming = false; $('audio-toggle').disabled = false;
+      warming = false; updateToggle();
       if (version !== sourceVersion && !released && $('audio-url').value.trim()) warm();
       else if (enabled && ready) play();
     }
   }
 
-  function setSource(value) {
+  function setSource(value, unavailableMessage = '현재 방송 중인 채널을 선택하세요.') {
     const next = value?.trim() || '';
+    const wasAvailable = available;
+    available = Boolean(next);
+    if (!next) {
+      if (wasAvailable || player || warming || enabled) reset();
+      $('audio-url').value = '';
+      ui(unavailableMessage); return;
+    }
     if (preparedSource === next && ready) return;
     stopPlayback(next ? '오디오 채널 변경 중' : '방송 채널을 선택하세요.');
     sourceVersion++; preparedSource = ''; ready = false; $('audio-url').value = next;
@@ -131,7 +141,7 @@ export function initAudio($, { beforePlay = () => {} } = {}) {
       if (token === attempt && wanted) { ui('오디오 재생 중'); mediaState('playing'); }
     } catch (error) {
       if (token !== attempt) return;
-      // Preserve the saved preference, but show that this page still needs a user gesture.
+      // Keep the switch off after a failed attempt; retry requires another play action.
       wanted = false; enabled = false; stopLoading(); mediaState('paused');
       if (error.name !== 'NotAllowedError') ready = false;
       ui(error.name === 'NotAllowedError' ? '자동 재생 차단됨 · 오디오 스위치를 켜세요.' : '오디오 재생 실패 · 다시 시도하세요.');
@@ -146,11 +156,11 @@ export function initAudio($, { beforePlay = () => {} } = {}) {
   });
   audio.addEventListener('pause', () => {
     if (warming || !audio.paused || !wanted) return;
-    attempt++; wanted = false; stopLoading(); ui('오디오 일시정지'); mediaState('paused');
+    enabled = false; attempt++; wanted = false; stopLoading(); ui('오디오 일시정지'); mediaState('paused');
   });
   audio.addEventListener('waiting', () => { if (wanted) ui('오디오 버퍼링 중'); });
-  audio.addEventListener('ended', () => stopPlayback('방송 오디오 종료'));
-  audio.addEventListener('error', () => { if (audio.error && !warming) { ready = false; stopPlayback('오디오 연결 실패 · 다시 시도하세요.'); } });
+  audio.addEventListener('ended', () => turnOff('방송 오디오 종료'));
+  audio.addEventListener('error', () => { if (audio.error && !warming) { ready = false; turnOff('오디오 연결 실패 · 다시 시도하세요.'); } });
   if ('mediaSession' in navigator) {
     for (const [action, handler] of [['play', turnOn], ['pause', () => turnOff()], ['stop', () => turnOff()]]) {
       try { navigator.mediaSession.setActionHandler(action, handler); } catch {}

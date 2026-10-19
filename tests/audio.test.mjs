@@ -38,20 +38,25 @@ test('Android Edge에서는 HLS.js를 준비하고 스위치 입력 안에서 �
   $('audio-toggle').checked = true;
   const playing = $('audio-toggle').onchange();
   assert.equal(audio.playCalls, 1, 'play called before awaiting a network or library load'); await playing;
-  assert.equal(saved.get('assembly-caption-audio-enabled'), 'true');
+  assert.equal(saved.has('assembly-caption-audio-enabled'), false);
   assert.equal($('audio-status').textContent, '오디오 재생 중');
   handlers.pause(); assert.equal(players[0].stopped, true);
   assert.equal($('audio-toggle').checked, false);
-  assert.equal(saved.get('assembly-caption-audio-enabled'), 'false');
+  assert.equal(saved.has('assembly-caption-audio-enabled'), false);
   await handlers.play(); assert.equal(audio.playCalls, 2);
   controller.setSource('https://original-broadcast.test/second.m3u8');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal($('audio-toggle').checked, true, '채널 변경 뒤에도 켜진 상태를 유지한다');
   assert.equal(audio.playCalls, 3, '변경된 채널의 오디오 재생을 이어간다');
   assert.equal(players.at(-1).source, 'https://original-broadcast.test/second.m3u8');
+  audio.paused = true; audio.listeners.pause();
+  assert.equal($('audio-toggle').checked, false, '브라우저가 오디오를 중지하면 스위치도 꺼진다');
+  controller.setSource('https://original-broadcast.test/third.m3u8');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(audio.playCalls, 3, '외부 중지 뒤에는 채널을 바꿔도 오디오를 자동 시작하지 않는다');
 });
 
-test('저장된 오디오 켬 상태를 새 페이지에서 복원한다', async t => {
+test('이전 오디오 켬 상태와 복원된 스위치가 있어도 새 페이지는 꺼진 상태로 시작한다', async t => {
   const nodes = {}, original = new Map(), saved = new Map([['assembly-caption-audio-enabled', 'true']]);
   const audio = { src: '', seekable: { length: 0 }, playCalls: 0,
     canPlayType() { return 'maybe'; }, pause() {}, load() {}, removeAttribute() {}, addEventListener() {},
@@ -59,8 +64,9 @@ test('저장된 오디오 켬 상태를 새 페이지에서 복원한다', async
   const $ = id => nodes[id] ??= { value: '', textContent: '', disabled: false, checked: false };
   nodes['broadcast-audio'] = audio;
   $('audio-url').value = 'https://original-broadcast.test/live.m3u8';
+  $('audio-toggle').checked = true;
   const values = {
-    window: { localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); } } },
+    window: { localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); }, removeItem(key) { saved.delete(key); } } },
     navigator: { userAgent: 'Version/18.0 Safari/605.1.15' },
   };
   for (const [name, value] of Object.entries(values)) {
@@ -69,9 +75,10 @@ test('저장된 오디오 켬 상태를 새 페이지에서 복원한다', async
   }
   t.after(() => { for (const [name, descriptor] of original) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name]; });
   initAudio($); await new Promise(resolve => setImmediate(resolve));
-  assert.equal($('audio-toggle').checked, true);
-  assert.equal(audio.playCalls, 1, '저장된 켬 상태이면 준비 후 자동 재생을 시도한다');
-  assert.equal($('audio-status').textContent, '오디오 재생 중');
+  assert.equal($('audio-toggle').checked, false);
+  assert.equal(audio.playCalls, 0, '저장된 켬 상태로 자동 재생하지 않는다');
+  assert.equal(saved.has('assembly-caption-audio-enabled'), false);
+  assert.equal($('audio-status').textContent, '오디오 대기');
 });
 
 function blockedHls(t, userAgent) {
@@ -122,8 +129,8 @@ function blockedHls(t, userAgent) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
     }
   });
-  initAudio($);
-  return { $, audio, players, saved,
+  const controller = initAudio($);
+  return { $, audio, players, saved, controller,
     toggle(checked) {
       $('audio-toggle').checked = checked; gesture = true;
       try { return $('audio-toggle').onchange(); } finally { gesture = false; }
@@ -134,19 +141,21 @@ function blockedHls(t, userAgent) {
 for (const [browser, userAgent] of [
   ['Android Edge', 'Android EdgA/140 Chrome'], ['Android Chrome', 'Android Chrome/140'],
 ]) {
-test(`${browser}: 자동재생 차단 후 스위치를 끄고 저장된 선호는 유지하며 지연된 pause가 안내를 덮지 않는다`, async t => {
-  const { $, audio, saved } = blockedHls(t, userAgent);
+test(`${browser}: 새 페이지는 자동 재생하지 않고 수동 재생 차단 후 지연된 pause가 안내를 덮지 않는다`, async t => {
+  const { $, audio, controller } = blockedHls(t, userAgent);
   await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(audio.playGestures, [], '이전 켬 상태가 있어도 자동 재생을 시도하지 않는다');
+  await controller.play();
   assert.equal($('audio-toggle').checked, false);
-  assert.equal(saved.get('assembly-caption-audio-enabled'), 'true');
   assert.match($('audio-status').textContent, /자동 재생 차단됨/);
   audio.listeners.pause();
   assert.match($('audio-status').textContent, /자동 재생 차단됨/);
 });
 
 test(`${browser}: 자동재생 차단으로 초기 HLS 목록이 취소되어도 스위치 입력 안에서 재요청하고 재생한다`, async t => {
-  const { $, audio, players, toggle } = blockedHls(t, userAgent);
+  const { $, audio, players, toggle, controller } = blockedHls(t, userAgent);
   await new Promise(resolve => setImmediate(resolve));
+  await controller.play();
   assert.equal(players[0].loadingManifest, false);
   const playing = toggle(true);
   assert.deepEqual(audio.playGestures, [false, true], '수동 재생은 비동기 준비를 기다리지 않고 사용자 입력 안에서 호출한다');

@@ -197,8 +197,8 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
       }
       if (url.pathname === '/api/video.m3u8') {
         const channel = selectedChannel(url, false);
-        if (!channel.onAir || !channel.audioUrl) {
-          json(response, 409, { error: '현재 방송 중인 채널을 선택하세요.' }); return;
+        if (!channel.audioUrl) {
+          json(response, 409, { error: '재생 주소가 있는 채널을 선택하세요.' }); return;
         }
         const sources = channel.videoSources?.length ? channel.videoSources : [{ url: channel.audioUrl }];
         const key = JSON.stringify(sources);

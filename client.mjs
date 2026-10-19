@@ -1,4 +1,4 @@
-import { initMedia } from './media.mjs';
+import { initMedia, isLiveChannel, isPlayableChannel, canReceiveCaptions } from './media.mjs';
 import { seoulSlot } from './lib/caption-format.mjs';
 
 const $ = id => document.getElementById(id);
@@ -10,7 +10,6 @@ let channels = [], channelId = '', preferredChannelId = '', viewDay = '';
 let chromeTimer = null;
 
 function selectedChannel() { return channels.find(channel => channel.id === channelId) ?? null; }
-function isPlayableChannel(channel) { return Boolean(channel?.onAir && channel.source && channel.audioUrl); }
 
 function keepChromeVisible() {
   if (chromeTimer !== null) window.clearTimeout?.(chromeTimer);
@@ -35,7 +34,7 @@ function revealChrome() {
 
 function controlState(message) {
   const liveDate = !config || !$('date').value || $('date').value === config.today;
-  const playable = isPlayableChannel(selectedChannel());
+  const playable = canReceiveCaptions(selectedChannel());
   const active = wantsLive && liveDate && playable;
   $('connect').checked = active;
   $('connect').disabled = !playable || !liveDate;
@@ -47,7 +46,7 @@ function updateStatus() {
   if (!channel) { controlState(channels.length ? '채널 정보를 선택해 주세요.' : '오늘 중계 예정인 위원회가 없습니다.'); return; }
   if (loading) { controlState('저장된 자막 불러오는 중'); return; }
   if (config && $('date').value !== config.today) { controlState(`${$('date').value} 저장 기록 보기`); return; }
-  if (!isPlayableChannel(channel)) {
+  if (!canReceiveCaptions(channel)) {
     controlState(`${channel.name} · ${channel.statusText || (channel.onAir ? '재생 주소 확인 중' : '현재 방송 중이 아님')} · 저장 기록 보기`); return;
   }
   if (!wantsLive) { controlState('화면 수신 일시정지 · 서버 수집은 계속됩니다.'); return; }
@@ -165,7 +164,7 @@ async function getJson(url, options) {
 }
 
 function openStream(token) {
-  if (!wantsLive || token !== generation || !channelId || !isPlayableChannel(selectedChannel()) || $('date').value !== config.today) return;
+  if (!wantsLive || token !== generation || !channelId || !canReceiveCaptions(selectedChannel()) || $('date').value !== config.today) return;
   const current = new EventSource(`/api/events?channel=${encodeURIComponent(channelId)}&date=${encodeURIComponent($('date').value)}&since=${cursor}`);
   stream = current;
   current.onopen = updateStatus;
@@ -214,7 +213,7 @@ async function loadView() {
 }
 
 function channelBullet(channel) {
-  if (channel.onAir) return '⬤';
+  if (isLiveChannel(channel)) return '⬤';
   const state = (channel.statusText || '').replace(/\s/g, '');
   if (state.includes('계속예정')) return '▷';
   if (state.includes('예정')) return '◷';
@@ -227,7 +226,7 @@ function renderChannelOptions() {
   const fragment = document.createDocumentFragment();
   for (const channel of channels) {
     const option = document.createElement('option'); option.value = channel.id;
-    const state = channel.onAir ? 'ON AIR' : channel.statusText || '종료';
+    const state = isLiveChannel(channel) ? 'ON AIR' : channel.statusText || '종료';
     option.textContent = `${channelBullet(channel)} ${channel.name} · ${state}${channel.subject ? ` · ${channel.subject}` : ''}`;
     fragment.append(option);
   }
@@ -246,7 +245,7 @@ function activateChannel(id) {
   $('channel').value = id;
   $('source-url').value = channel?.source || '';
   $('audio-url').value = isPlayableChannel(channel) ? channel.audioUrl : '';
-  mediaController?.setSource(isPlayableChannel(channel) ? channel : null);
+  mediaController?.setSource(channel);
   collectorState = channel?.collector?.state || 'connecting';
   loadView();
 }
@@ -255,10 +254,10 @@ async function refreshChannels(manual = false) {
   if (manual) $('refresh-channels').disabled = true;
   try {
     const data = await getJson(manual ? '/api/channels?refresh=1' : '/api/channels');
-    const previousPlayable = isPlayableChannel(selectedChannel());
+    const previousCaptionReady = canReceiveCaptions(selectedChannel());
     channels = [...data.channels].sort((left, right) =>
       Number(left.statusText?.trim() === '생중계 없음') - Number(right.statusText?.trim() === '생중계 없음'));
-    const playable = channels.filter(isPlayableChannel);
+    const playable = channels.filter(isLiveChannel);
     const wantedId = channelId || preferredChannelId;
     const nextId = channels.find(channel => channel.id === wantedId)?.id || playable[0]?.id || channels[0]?.id || '';
     renderChannelOptions();
@@ -270,9 +269,9 @@ async function refreshChannels(manual = false) {
       $('source-url').value = channel.source || '';
       const nextAudio = isPlayableChannel(channel) ? channel.audioUrl : '';
       $('audio-url').value = nextAudio;
-      mediaController?.setSource(isPlayableChannel(channel) ? channel : null);
+      mediaController?.setSource(channel);
       collectorState = channel.collector?.state || collectorState; updateStatus();
-      let reload = previousPlayable !== isPlayableChannel(channel);
+      let reload = previousCaptionReady !== canReceiveCaptions(channel);
       if (data.today && data.today !== config.today) {
         const followedToday = !$('date').value || $('date').value === config.today;
         config.today = data.today; $('date').max = data.today;
@@ -281,7 +280,7 @@ async function refreshChannels(manual = false) {
       if (reload) loadView();
     }
     const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString('ko-KR') : '방금';
-    const onAirCount = channels.filter(channel => channel.onAir).length;
+    const onAirCount = channels.filter(isLiveChannel).length;
     const scheduledCount = channels.filter(channel => channel.statusText?.trim() !== '생중계 없음').length;
     $('channel-refresh-status').textContent = data.lastError ? `목록 갱신 실패 · ${data.lastError}` :
       onAirCount ? `채널 목록 ${refreshed} 갱신 · ON AIR ${onAirCount}개` : `현재 ON AIR 없음 · 오늘 편성 채널 ${scheduledCount}개 · ${refreshed} 갱신`;
