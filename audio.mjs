@@ -1,9 +1,24 @@
+let hlsLibrary = null;
+export function loadHls() {
+  if (window.Hls) return Promise.resolve(window.Hls);
+  if (!hlsLibrary) hlsLibrary = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js';
+    script.integrity = 'sha384-cciJ0zi8d1uMKC2zJd7jvPY4HQt7W4ByUI/FlMkltvBi31aW61rcpVBhpmW8/NwX';
+    script.crossOrigin = 'anonymous';
+    script.onload = () => window.Hls ? resolve(window.Hls) : reject(Error('재생기 로드 실패'));
+    script.onerror = () => { script.remove(); reject(Error('오디오 재생기 로드 실패 · 인터넷 연결 확인')); };
+    document.head.append(script);
+  }).catch(error => { hlsLibrary = null; throw error; });
+  return hlsLibrary;
+}
+
 // All media requests go from the client to the original broadcast, never through our server.
-export function initAudio($) {
+export function initAudio($, { beforePlay = () => {} } = {}) {
   const audio = $('broadcast-audio');
   const storageKey = 'assembly-caption-audio-enabled';
-  let player = null, library = null, ready = false, warming = false, wanted = false, attempt = 0, preparedSource = '', sourceVersion = 0;
-  let enabled = false, reloadManifest = false;
+  let player = null, ready = false, warming = false, wanted = false, attempt = 0, preparedSource = '', sourceVersion = 0;
+  let enabled = false, reloadManifest = false, released = false;
   try { enabled = window.localStorage?.getItem(storageKey) === 'true'; } catch {}
 
   function savePreference() {
@@ -29,21 +44,11 @@ export function initAudio($) {
     enabled = false; savePreference(); stopPlayback(message);
   }
   function turnOn() {
+    beforePlay();
+    released = false;
     enabled = true; savePreference(); ui(ready ? '오디오 연결 중' : '오디오 재생 준비 중'); return play();
   }
-  function loadLibrary() {
-    if (window.Hls) return Promise.resolve(window.Hls);
-    if (!library) library = new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js';
-      script.integrity = 'sha384-cciJ0zi8d1uMKC2zJd7jvPY4HQt7W4ByUI/FlMkltvBi31aW61rcpVBhpmW8/NwX';
-      script.crossOrigin = 'anonymous';
-      script.onload = () => window.Hls ? resolve(window.Hls) : reject(Error('재생기 로드 실패'));
-      script.onerror = () => { script.remove(); reject(Error('오디오 재생기 로드 실패 · 인터넷 연결 확인')); };
-      document.head.append(script);
-    }).catch(error => { library = null; throw error; });
-    return library;
-  }
+
 
   async function warm() {
     if (warming) return;
@@ -61,7 +66,7 @@ export function initAudio($) {
         audio.src = source.href;
       } else {
         // Android Edge may claim native HLS support but fail at playback; use MSE when available.
-        const Hls = await loadLibrary();
+        const Hls = window.Hls || await loadHls();
         if (version !== sourceVersion) return;
         if (Hls.isSupported()) {
           const current = new Hls({ autoStartLoad: false, maxBufferLength: 30, backBufferLength: 10, liveSyncDurationCount: 3 });
@@ -81,7 +86,7 @@ export function initAudio($) {
     } catch (error) { if (version === sourceVersion) ui(error.message); }
     finally {
       warming = false; $('audio-toggle').disabled = false;
-      if (version !== sourceVersion && $('audio-url').value.trim()) warm();
+      if (version !== sourceVersion && !released && $('audio-url').value.trim()) warm();
       else if (enabled && ready) play();
     }
   }
@@ -91,12 +96,21 @@ export function initAudio($) {
     if (preparedSource === next && ready) return;
     stopPlayback(next ? '오디오 채널 변경 중' : '방송 채널을 선택하세요.');
     sourceVersion++; preparedSource = ''; ready = false; $('audio-url').value = next;
+    released = false;
     if (next) warm();
+  }
+
+  function reset() {
+    released = true; turnOff(); sourceVersion++;
+    preparedSource = ''; ready = false; reloadManifest = false;
+    const previous = player; player = null; previous?.destroy();
+    audio.removeAttribute('src'); audio.load();
   }
 
   async function play() {
     if (!enabled || wanted || warming) return;
     if (!ready) { await warm(); if (!ready || !enabled || wanted) return; }
+    beforePlay();
     const token = ++attempt; wanted = true; ui('오디오 연결 중');
     try {
       if (player && reloadManifest) {
@@ -143,5 +157,7 @@ export function initAudio($) {
     }
   }
   if ($('audio-url').value.trim()) warm(); else ui('방송 채널을 선택하세요.');
-  return { play: turnOn, pause: turnOff, setSource };
+  return { play: turnOn, pause: turnOff, reset, setSource,
+    suspend() { enabled = false; stopPlayback(); },
+  };
 }

@@ -7,13 +7,17 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   let nextTimer = 1;
   const scroller = { scrollTop: 0 }, toolbar = { top: 480, height: 320 }, header = { height: 150 };
   function element(tag = 'div') {
+    const classes = new Set();
     return { tag, value: '', checked: false, textContent: '', style: {}, children: [], attributes: {},
+      hidden: false, classList: { contains: name => classes.has(name), add: name => classes.add(name), remove: name => classes.delete(name),
+        toggle(name, force) { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); } },
+      contains() { return false; },
       append(...children) { for (const child of children) this.children.push(...(child.tag === 'fragment' ? child.children : [child])); },
       replaceChildren(...children) { this.children = []; this.append(...children); },
       querySelector() { return this.children.filter(child => child.tag === 'article').at(-1) || null; },
       getBoundingClientRect() { return { bottom: 1700 - scroller.scrollTop }; },
       setAttribute(name, value) { this.attributes[name] = value; },
-      addEventListener() {}, click() {},
+      addEventListener() {}, click() {}, focus() { this.focused = true; },
     };
   }
   Object.assign(scroller, {
@@ -23,17 +27,21 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   nodes['caption-scroller'] = scroller;
   const bodyClasses = new Set();
   const document = { visibilityState: 'visible', documentElement: { style: { setProperty() {} } }, scrollingElement: scroller,
-    body: { classList: { add(name) { bodyClasses.add(name); }, remove(name) { bodyClasses.delete(name); }, contains(name) { return bodyClasses.has(name); } } },
+    body: { classList: { add(name) { bodyClasses.add(name); }, remove(name) { bodyClasses.delete(name); }, contains(name) { return bodyClasses.has(name); },
+      toggle(name, force) { if (force ?? !bodyClasses.has(name)) bodyClasses.add(name); else bodyClasses.delete(name); } } },
     getElementById(id) { return nodes[id] ??= element(); }, createElement: element,
     createDocumentFragment() { return element('fragment'); }, addEventListener(name, fn) { documentHandlers.set(name, fn); },
     querySelector(selector) { return { getBoundingClientRect() { return selector === '.top-panel' ? header : toolbar; } }; }, head: element('head'),
   };
   const audio = Object.assign(element('audio'), { canPlayType() { return 'maybe'; }, pause() {}, load() {}, removeAttribute() {} });
   nodes['broadcast-audio'] = audio;
+  nodes['broadcast-video'] = Object.assign(element('video'), { canPlayType() { return 'maybe'; }, pause() {}, load() {}, removeAttribute() {} });
+  document.getElementById('media-panel').hidden = true;
+  document.getElementById('search-panel').hidden = true;
   document.getElementById('follow').checked = true;
   document.getElementById('mode').value = 'clean';
   const saved = new Map([['assembly-caption-channel', '25']]);
-  const compactScreen = { matches: true, addEventListener() {} };
+  const compactScreen = { matches: false, addEventListener() {} };
   const window = { innerHeight: 800, isSecureContext: false, addEventListener() {}, scrollTo({ top }) { scroller.scrollTop = top; },
     matchMedia() { return compactScreen; },
     setTimeout(fn) { const id = nextTimer++; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
@@ -87,11 +95,18 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   assert.equal(saved.get('assembly-caption-channel'), '25');
   assert.equal(nodes.rows.children.length, 2);
   assert.equal(nodes.connect.checked, true);
-  assert.equal(timers.size, 1, '모바일 실시간 재생은 유휴 숨김 타이머를 예약한다');
+  assert.equal(timers.size, 1, '넓은 PC 화면에서도 실시간 재생 중 유휴 숨김 타이머를 예약한다');
   [...timers.values()].at(-1)(); timers.clear();
   assert.equal(document.body.classList.contains('chrome-hidden'), true, '유휴 상태에서 상단·하단 도구를 접는다');
   documentHandlers.get('pointerdown')();
   assert.equal(document.body.classList.contains('chrome-hidden'), false, '화면을 만지면 도구가 다시 나타난다');
+  nodes['search-toggle'].onclick();
+  assert.equal(nodes['search-panel'].hidden, false);
+  assert.equal(nodes.search.focused, true);
+  assert.equal(timers.size, 0, '검색하는 동안에는 도구를 자동으로 숨기지 않는다');
+  nodes['search-close'].onclick();
+  assert.equal(nodes['search-panel'].hidden, true);
+  assert.equal(nodes['search-toggle'].focused, true);
   streams[0].emit('caption', { cursor: 2, caption: caption(1, '초안을 교체한 문장', 2) }); flush();
   assert.equal(nodes.rows.children.length, 2);
   assert.equal(nodes.rows.children[0].textContent, '초안을 교체한 문장');
@@ -113,13 +128,20 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
     window.innerHeight = height; toolbar.top = height - 250; toolbar.height = 250; scroller.scrollTop = 0;
     nodes.follow.onchange(); flush(); assert.equal(1700 - scroller.scrollTop, toolbar.top - 12);
   }
-  nodes.search.value = '초안을 교체'; nodes.search.oninput(); flush(); assert.equal(nodes.rows.children.length, 1);
+  nodes['search-toggle'].onclick();
+  nodes.search.value = '저장된 첫'; nodes.search.oninput(); flush();
+  assert.equal(nodes.rows.children.length, 1);
+  assert.equal(nodes.rows.children[0].textContent, '저장된 첫 문장');
+  nodes.search.onkeydown({ key: 'Escape', preventDefault() {} }); flush();
+  assert.equal(nodes['search-panel'].hidden, true);
+  assert.equal(nodes.search.value, '', '검색을 닫으면 숨겨진 검색 조건도 해제한다');
+  assert.equal(nodes.rows.children.length, 2);
   assert.ok(requests.every(url => !url.includes('/api/audio')), 'Client never requests an audio proxy');
   noOnAir = true;
   await nodes['refresh-channels'].onclick(); await settle(); await settle(); flush();
   assert.equal(nodes.channel.disabled, false, 'ON AIR가 없어도 파싱된 채널 목록은 사용할 수 있다');
   assert.equal(nodes.channel.value, '25');
-  assert.match(nodes.channel.children.find(option => option.value === '25').textContent, /○ 산회 · 법사위 · 국정감사 종료/);
+  assert.match(nodes.channel.children.find(option => option.value === '25').textContent, /○ 법사위 · 산회 · 국정감사 종료/);
   assert.match(nodes['channel-refresh-status'].textContent, /현재 ON AIR 없음 · 오늘 편성 채널 1개/);
   const noSchedule = nodes.channel.children.find(option => option.value === '33');
   assert.ok(noSchedule, '오늘 편성이 없는 위원회도 과거 기록을 위해 보여준다');
@@ -144,9 +166,16 @@ test('다크테마·고정 레이아웃과 iPhone 형태의 자막·오디오 �
   assert.ok(html.includes('id="date"') && html.includes('class="switch-track"'));
   assert.match(html, /<input id="connect" class="ios-toggle" type="checkbox" role="switch" checked/);
   assert.match(html, /<input id="audio-toggle" class="ios-toggle" type="checkbox" role="switch"/);
+  assert.match(html, /<input id="video-toggle" class="ios-toggle" type="checkbox" role="switch"/);
+  assert.match(html, /id="video-options"[^>]*hidden/);
+  assert.ok(html.match(/<section class="channel-bar"[\s\S]*?<\/section>/)[0].includes('id="date"'));
+  const settings = html.match(/<div id="toolbar-settings"[\s\S]*?<\/div>/)[0];
+  assert.ok(settings.includes('id="mode"') && settings.includes('id="txt"'));
+  assert.match(html, /id="search-panel"[^>]*hidden/);
+  assert.ok(!html.includes('id="tools-toggle"') && !html.includes('id="txt-tools"'));
   assert.doesNotMatch(html, /<button id="(?:connect|audio-toggle)"/);
   assert.ok(html.includes('body.chrome-hidden .top-panel') && html.includes('body.chrome-hidden .controls'));
-  assert.ok(html.includes('body.chrome-hidden #caption-scroller{top:0;bottom:0}'));
+  assert.ok(html.includes('body.chrome-hidden #caption-scroller{top:var(--video-height,0px);bottom:0}'));
   assert.ok(!html.includes('id="json"') && !html.includes('id="load"'));
   assert.ok(!html.includes('<time') && !html.includes('수신 원본 보기'));
   assert.equal(/[\u3040-\u30ff]/.test(html), false);

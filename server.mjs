@@ -9,6 +9,7 @@ import { CaptionCollector } from './lib/collector.mjs';
 import { isDay, seoulDay } from './lib/caption-format.mjs';
 import { defaultListUrl } from './lib/broadcast-config.mjs';
 import { ChannelManager } from './lib/channel-manager.mjs';
+import { createVideoManifest } from './lib/video-manifest.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const defaultSource = 'wss://smiai.webcast.go.kr:8091/aistt/bokji/hls';
@@ -18,6 +19,7 @@ const assets = new Map([
   ['/captions.html', ['captions.html', 'text/html; charset=utf-8']],
   ['/client.mjs', ['client.mjs', 'text/javascript; charset=utf-8']],
   ['/audio.mjs', ['audio.mjs', 'text/javascript; charset=utf-8']],
+  ['/media.mjs', ['media.mjs', 'text/javascript; charset=utf-8']],
   ['/lib/caption-format.mjs', ['lib/caption-format.mjs', 'text/javascript; charset=utf-8']],
 ]);
 
@@ -96,6 +98,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
 }
 </script>` : '';
   const assetCache = new Map();
+  const videoManifests = new Map();
   async function getAsset(assetName, contentType) {
     let cached = assetCache.get(assetName);
     if (!cached) {
@@ -191,6 +194,26 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
           name: broadcast?.committee || '방송', subject: broadcast?.subject || '', statusText: '', onAir: true,
           source, audioUrl, pageUrl, collector: collector.state }], refreshedAt: null, lastError: null, refreshMs: 0 };
         json(response, 200, { ...snapshot, today: seoulDay() }); return;
+      }
+      if (url.pathname === '/api/video.m3u8') {
+        const channel = selectedChannel(url, false);
+        if (!channel.onAir || !channel.audioUrl) {
+          json(response, 409, { error: '현재 방송 중인 채널을 선택하세요.' }); return;
+        }
+        const sources = channel.videoSources?.length ? channel.videoSources : [{ url: channel.audioUrl }];
+        const key = JSON.stringify(sources);
+        let cached = videoManifests.get(key);
+        if (!cached || cached.expires <= Date.now()) {
+          if (videoManifests.size >= 100) videoManifests.clear();
+          cached = { expires: Date.now() + 30000, content: createVideoManifest(sources, fetchImpl) };
+          videoManifests.set(key, cached);
+        }
+        let content;
+        try { content = await cached.content; }
+        catch (error) { videoManifests.delete(key); throw error; }
+        response.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl',
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        response.end(request.method === 'HEAD' ? undefined : content); return;
       }
       if (url.pathname === '/api/status' || url.pathname === '/healthz') {
         json(response, 200, channelManager ? { ...channelManager.snapshot(), cursor: store.cursor(), today: seoulDay() } :
