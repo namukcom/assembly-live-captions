@@ -110,7 +110,7 @@ body.chrome-hidden .media-panel{top:0}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .media-actions button,.media-actions select,.fullscreen-controls button,.fullscreen-controls select{min-height:44px;font-size:14px}
 button[aria-pressed=true]{background:#184c40;border-color:#57d7b2;color:#baf7e6}
-.quality-field{display:flex;align-items:center;gap:6px;font-size:13px;flex:0 0 auto}
+.quality-field{display:flex;flex:0 0 auto}
 #video-quality,#fullscreen-quality{width:156px;min-width:156px;max-width:none;flex-shrink:0}
 .fullscreen-captions,.fullscreen-controls{display:none}
 .media-shell:fullscreen,.media-shell.is-expanded{max-width:none;width:100%;height:100%;display:flex;flex-direction:column}
@@ -133,8 +133,8 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
 }
 @media(max-width:480px){
  .playback-copy strong{white-space:nowrap}
- .media-actions{gap:6px}.media-actions button{padding:7px 9px}.quality-field{gap:3px}
- .quality-field{font-size:0}.quality-field select{font-size:13px}
+ .media-actions{gap:6px}.media-actions button{padding:7px 9px}
+ .quality-field select{font-size:13px}
  .fullscreen-controls{gap:5px!important}.fullscreen-controls button,.fullscreen-controls select{padding:6px;font-size:13px}
 }
 @media(max-height:500px){
@@ -219,7 +219,7 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
     </div>
   </div>
   <div id="video-options" class="media-actions" aria-label="영상 재생 도구" hidden>
-      <label class="quality-field">화질 <select id="video-quality" aria-label="영상 화질" disabled><option value="auto">자동</option></select></label>
+      <label class="quality-field"><select id="video-quality" aria-label="영상 화질" disabled><option value="auto">자동</option></select></label>
       <button id="pip-toggle" aria-pressed="false" disabled title="지원하는 브라우저에서 영상 재생 후 사용할 수 있습니다">PIP</button>
       <button id="fullscreen-toggle" aria-pressed="false" disabled>전체화면</button>
   </div>
