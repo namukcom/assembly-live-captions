@@ -111,8 +111,8 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   assert.equal(nodes.rows.children.length, 2);
   assert.equal(nodes.rows.children[0].textContent, '초안을 교체한 문장');
   assert.deepEqual(nodes.rows.children[0].children, [], 'Caption has no timestamp or raw-message details');
-  streams[0].emit('caption', { cursor: 4, caption: { ...caption(3, '10분 뒤 새 문장', 4), at: '2026-10-14T08:10:02Z' } }); flush();
-  assert.deepEqual(nodes.rows.children.map(child => child.textContent), ['초안을 교체한 문장', '불러오는 동안 생긴 문장', '─── 17:10 ───', '10분 뒤 새 문장']);
+  streams[0].emit('caption', { cursor: 4, caption: { ...caption(3, '5분 뒤 새 문장', 4), at: '2026-10-14T08:05:02Z' } }); flush();
+  assert.deepEqual(nodes.rows.children.map(child => child.textContent), ['초안을 교체한 문장', '불러오는 동안 생긴 문장', '─── 17:05 ───', '5분 뒤 새 문장']);
   nodes.connect.checked = false; nodes.connect.onchange(); assert.equal(streams[0].closed, true); assert.equal(nodes.connect.checked, false);
   assert.equal(document.body.classList.contains('chrome-hidden'), false, '자막을 멈추면 도구를 계속 표시한다');
   assert.equal(timers.size, 0, '자막을 멈추면 유휴 숨김 타이머를 해제한다');

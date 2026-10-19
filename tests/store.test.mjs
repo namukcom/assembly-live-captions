@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { CaptionStore } from '../lib/store.mjs';
-import { isDay, parseCaption, seoulDay } from '../lib/caption-format.mjs';
+import { isDay, parseCaption, seoulDay, seoulSlot } from '../lib/caption-format.mjs';
 
 const source = 'wss://example.test/captions';
 const at = '2026-10-14T08:00:00.000Z';
@@ -60,24 +60,33 @@ test('빈 자막과 제어 메시지는 화면 기록에 추가하지 않고 원
   } finally { store.close(); }
 });
 
-test('한국 날짜 경계와 날짜 유효성을 확인한다', () => {
+test('한국 날짜 경계와 5분 시간 구간, 날짜 유효성을 확인한다', () => {
   assert.equal(seoulDay('2026-10-14T14:59:59Z'), '2026-10-14');
   assert.equal(seoulDay('2026-10-14T15:00:00Z'), '2026-10-15');
   assert.equal(isDay('2026-02-30'), false);
   assert.equal(isDay('2026-10-14'), true);
+  for (const [time, slot] of [
+    ['08:04:59.999', '17:00'], ['08:05:00.000', '17:05'],
+    ['08:09:59.999', '17:05'], ['08:10:00.000', '17:10'],
+    ['08:59:59.999', '17:55'], ['09:00:00.000', '18:00'],
+    ['14:59:59.999', '23:55'], ['15:00:00.000', '00:00'],
+  ]) assert.equal(seoulSlot(`2026-10-14T${time}Z`), slot);
+  assert.equal(seoulSlot('invalid'), null);
 });
 
-test('위원회 채널별로 자막, 원본 이벤트와 TXT 내용을 분리하고 10분 단위 타임스탬프를 표시한다', () => {
+test('위원회 채널별로 자막, 원본 이벤트와 TXT 내용을 분리하고 5분 단위 타임스탬프를 표시한다', () => {
   const store = new CaptionStore(':memory:');
   try {
     const other = 'wss://example.test/other';
     store.ingest(raw(1, '첫 채널'), source, at);
     store.ingest(raw(1, '다른 채널'), other, at);
-    store.ingest(raw(2, '10분 뒤 문장'), other, '2026-10-14T08:10:05.000Z');
+    store.ingest(raw(2, '5분 뒤 문장'), other, '2026-10-14T08:05:00.000Z');
+    store.ingest(raw(3, '같은 5분 구간 문장'), other, '2026-10-14T08:09:59.999Z');
+    store.ingest(raw(4, '다음 5분 구간 문장'), other, '2026-10-14T08:10:00.000Z');
     assert.deepEqual(store.rows({ day: '2026-10-14', source }).map(row => row.text), ['첫 채널']);
-    assert.deepEqual(store.rows({ day: '2026-10-14', source: other }).map(row => row.text), ['다른 채널', '10분 뒤 문장']);
+    assert.deepEqual(store.rows({ day: '2026-10-14', source: other }).map(row => row.text), ['다른 채널', '5분 뒤 문장', '같은 5분 구간 문장', '다음 5분 구간 문장']);
     assert.equal(store.eventsAfter(0, '2026-10-14', source).length, 1);
-    assert.deepEqual([...store.textRows('2026-10-14', 'clean', other)], ['다른 채널', '─── 17:10 ───', '10분 뒤 문장']);
+    assert.deepEqual([...store.textRows('2026-10-14', 'clean', other)], ['다른 채널', '─── 17:05 ───', '5분 뒤 문장', '같은 5분 구간 문장', '─── 17:10 ───', '다음 5분 구간 문장']);
   } finally { store.close(); }
 });
 
