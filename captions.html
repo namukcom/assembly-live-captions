@@ -35,7 +35,7 @@ button:hover{filter:brightness(1.12)}button:disabled{opacity:.55;cursor:wait}
 #txt{min-height:44px;white-space:nowrap}
 .toolbar-settings{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:end}
 .control-field{display:block;font-size:14px;min-width:0}
-.control-field select,.control-field input[type=search],.control-field input[type=date]{display:block;width:100%;margin-top:4px;font-size:16px;min-height:44px}
+.control-field select,.control-field input[type=search],.control-field input[type=date]{display:block;width:100%;margin-top:0;font-size:16px;min-height:44px}
 .follow-controls{display:flex;align-items:center;gap:8px 16px;min-width:0}
 .check-field{display:flex;gap:8px;align-items:center;min-height:32px;cursor:pointer;font-size:14px}
 input[type=checkbox]{accent-color:#57d7b2;flex-shrink:0}
@@ -78,8 +78,6 @@ body.chrome-hidden #caption-scroller{top:var(--video-height,0px);bottom:0}
   .follow-controls{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px}
   .check-field{min-height:28px;font-size:12px;gap:5px;white-space:nowrap}
   #screen-status{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .field-caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
-  .control-field select,.control-field input[type=search],.control-field input[type=date]{margin-top:0}
 }
 @media(max-width:480px){
   .top-panel{padding:8px 12px}.top-panel h1{font-size:18px}.title-row{gap:8px;margin-bottom:6px}.channel-bar{padding:9px}
@@ -226,7 +224,7 @@ body.media-expanded .top-panel,body.media-expanded>.controls{visibility:hidden}
       <button id="fullscreen-toggle" aria-pressed="false" disabled>전체화면</button>
   </div>
   <div id="toolbar-settings" class="toolbar-settings">
-    <label class="control-field"><span class="field-caption">표시 방식</span><select id="mode"><option value="clean">실시간 · 문장별 최신본</option><option value="final">완성된 자막만</option><option value="raw">수신 메시지 전체</option></select></label>
+    <label class="control-field"><span class="sr-only">표시 방식</span><select id="mode"><option value="clean">실시간 · 문장별 최신본</option><option value="final">완성된 자막만</option><option value="raw">수신 메시지 전체</option></select></label>
     <button id="txt">TXT 다운로드</button>
     <button id="search-toggle" class="search-toggle" aria-label="자막 검색" title="자막 검색" aria-expanded="false" aria-controls="search-panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></button>
   </div>
