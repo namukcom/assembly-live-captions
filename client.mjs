@@ -213,12 +213,22 @@ async function loadView() {
   }
 }
 
+function channelBullet(channel) {
+  if (channel.onAir) return '⬤';
+  const state = (channel.statusText || '').replace(/\s/g, '');
+  if (state.includes('계속예정')) return '▷';
+  if (state.includes('예정')) return '◷';
+  if (/중지|정회/.test(state)) return 'Ⅱ';
+  if (/종료|산회|폐회/.test(state)) return '✓';
+  return '○';
+}
+
 function renderChannelOptions() {
   const fragment = document.createDocumentFragment();
   for (const channel of channels) {
     const option = document.createElement('option'); option.value = channel.id;
     const state = channel.onAir ? 'ON AIR' : channel.statusText || '종료';
-    option.textContent = `${channel.onAir ? '●' : '○'} ${channel.name} · ${state}${channel.subject ? ` · ${channel.subject}` : ''}`;
+    option.textContent = `${channelBullet(channel)} ${channel.name} · ${state}${channel.subject ? ` · ${channel.subject}` : ''}`;
     fragment.append(option);
   }
   $('channel').replaceChildren(fragment); $('channel').value = channelId;
