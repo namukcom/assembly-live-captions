@@ -1,11 +1,12 @@
 import { initMedia, isLiveChannel, isPlayableChannel, canReceiveCaptions } from './media.mjs';
-import { seoulSlot } from './lib/caption-format.mjs';
+import { parseCaption, segmentKey, seoulSlot } from './lib/caption-format.mjs';
 
 const $ = id => document.getElementById(id);
 const channelStorageKey = 'assembly-caption-channel';
-let config, mediaController, stream, loadAbort, generation = 0, wantsLive = true, loading = false;
-let cursor = 0, collectorState = 'connecting', followFrame = null, renderFrame = null, layoutFrame = null;
-let captions = new Map(), records = new Map(), articles = new Map(), rawArticles = new Map(), dirtyStructure = true;
+let config, mediaController, stream, loadAbort, reconnectTimer = null, generation = 0, wantsLive = true, loading = false, bufferingLive = false;
+let collectorState = 'connecting', followFrame = null, renderFrame = null, layoutFrame = null;
+let captions = new Map(), records = new Map(), segmentIds = new Map(), lastServerId = 0, nextLiveId = 1, nextRecordId = 1;
+let articles = new Map(), rawArticles = new Map(), dirtyStructure = true;
 let orderedCaptions = null, finalCaptions = null, orderedRecords = null, renderedRows = null, renderedCount = 0, renderedSlot = null, latestArticle = null;
 const pendingCaptionUpdates = new Set(), pendingRecordUpdates = new Set(), layoutHeights = new Map();
 let channels = [], channelId = '', preferredChannelId = '', viewDay = '';
@@ -172,9 +173,16 @@ function scheduleRender() {
 }
 
 function applyCaption(row) {
-  if (!row || (viewDay && row.day !== viewDay)) return;
+  if (!row || (row.day && viewDay && row.day !== viewDay)) return;
+  if (row.k && segmentIds.has(row.k)) {
+    row.id = segmentIds.get(row.k);
+  } else if (captions.has(row.id) && row.k && captions.get(row.id).k && captions.get(row.id).k !== row.k) {
+    row.id = nextLiveId++;
+  }
+  if (row.id >= nextLiveId) nextLiveId = row.id + 1;
+  if (row.k) segmentIds.set(row.k, row.id);
   const old = captions.get(row.id);
-  if (!old || old.revision <= row.revision) {
+  if (!old || old.revision === undefined || row.revision === undefined || old.revision <= row.revision) {
     row._time = old?._time ?? Date.parse(row.at); row._search = row.text.toLowerCase();
     if (old) {
       const membershipChanged = (old.final !== false) !== (row.final !== false);
@@ -195,7 +203,8 @@ function appendOrdered(rows, row) {
 }
 
 function applyRecord(row) {
-  if (!row || (viewDay && row.day !== viewDay)) return;
+  if (!row || (row.day && viewDay && row.day !== viewDay)) return;
+  if (row.id >= nextRecordId) nextRecordId = row.id + 1;
   const old = records.get(row.id);
   if (!old && !row.text.trim()) return;
   row._time = Date.parse(row.at); row._search = row.text.toLowerCase(); row._slot = seoulSlot(row.at);
@@ -211,59 +220,151 @@ function applyRecord(row) {
   if (rawArticles.has(row.id)) pendingRecordUpdates.add(row.id);
 }
 
+function handleLiveMessage(raw, fromBuffer = false) {
+  const text = String(raw ?? '');
+  if ($('mode').value === 'raw') {
+    let rawItem = null;
+    try { rawItem = JSON.parse(text); } catch {}
+    if (rawItem && typeof rawItem === 'object' && ('record' in rawItem || 'id' in rawItem)) {
+      const rec = rawItem.record ?? rawItem;
+      applyRecord({ id: rec.id ?? nextRecordId++, at: rec.at ?? new Date().toISOString(), text: rec.text ?? '' });
+      if (!('segment' in rawItem) && !('caption' in rawItem)) return;
+    }
+  }
+  const parsed = parseCaption(text);
+  if (!parsed) return;
+  const k = segmentKey(parsed.offset, parsed.segment);
+  let id = k ? segmentIds.get(k) : undefined;
+  const existing = id !== undefined ? captions.get(id) : undefined;
+  if (fromBuffer && existing && existing.final !== false && parsed.final === false) return;
+  if (id === undefined) {
+    id = nextLiveId++;
+    if (k) segmentIds.set(k, id);
+  }
+  const at = existing?.at ?? parsed.at ?? new Date().toISOString();
+  applyCaption({ id, k, text: parsed.text, final: parsed.final !== false, at });
+  if ($('mode').value === 'raw') {
+    applyRecord({ id: nextRecordId++, at: parsed.at ?? new Date().toISOString(), text: parsed.text });
+  }
+}
+
 async function getJson(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) throw Error(`서버 요청 실패 (${response.status})`);
   return response.json();
 }
 
-function openStream(token) {
-  if (!wantsLive || token !== generation || !channelId || !canReceiveCaptions(selectedChannel()) || $('date').value !== config.today) return;
-  const current = new EventSource(`/api/events?channel=${encodeURIComponent(channelId)}&date=${encodeURIComponent($('date').value)}&since=${cursor}`);
+function closeStream() {
+  bufferingLive = false;
+  if (reconnectTimer !== null) { window.clearTimeout?.(reconnectTimer); reconnectTimer = null; }
+  if (!stream) return;
+  const current = stream;
+  stream = null;
+  current.onopen = current.onmessage = current.onerror = current.onclose = null;
+  current.close?.();
+}
+
+function openStream(token, buffered) {
+  const channel = selectedChannel();
+  if (!wantsLive || token !== generation || !channelId || !canReceiveCaptions(channel) || $('date').value !== config.today) return;
+  bufferingLive = Boolean(buffered);
+  const current = new WebSocket(channel.source, 'echo-protocol');
   stream = current;
-  current.onopen = updateStatus;
-  current.onerror = () => {
-    if (stream === current && wantsLive) controlState('화면 연결 복구 중 · 서버 기록은 계속 저장됩니다.');
-  };
-  current.addEventListener('caption', event => {
+  current.onopen = () => {
     if (stream !== current || token !== generation) return;
-    const item = JSON.parse(event.data); cursor = Math.max(cursor, item.cursor);
-    applyCaption(item.caption); if ($('mode').value === 'raw') applyRecord(item.record); scheduleRender();
-  });
-  current.addEventListener('status', event => {
-    if (stream !== current) return;
-    const previous = collectorState;
-    collectorState = JSON.parse(event.data).state; updateStatus();
-    if (collectorState !== 'connected') keepChromeVisible();
-    else if (previous !== 'connected') revealChrome();
-  });
-  current.addEventListener('reset', () => { if (stream === current) loadView(); });
+    collectorState = 'connected';
+    updateStatus();
+    if (!loading) revealChrome();
+  };
+  current.onmessage = event => {
+    if (stream !== current || token !== generation) return;
+    if (loading || bufferingLive) { buffered?.push(event.data); return; }
+    handleLiveMessage(event.data, false);
+    scheduleRender();
+  };
+  current.onerror = () => {
+    if (stream === current && wantsLive) {
+      collectorState = 'reconnecting';
+      keepChromeVisible();
+      controlState('화면 연결 복구 중 · 서버 기록은 계속 저장됩니다.');
+    }
+  };
+  current.onclose = () => {
+    if (stream !== current || token !== generation || !wantsLive) return;
+    stream = null;
+    bufferingLive = false;
+    collectorState = 'reconnecting';
+    keepChromeVisible();
+    controlState('화면 연결 복구 중 · 서버 기록은 계속 저장됩니다.');
+    if (window.setTimeout) {
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        if (wantsLive && token === generation) resumeView();
+      }, 2000);
+    }
+  };
+}
+
+async function fetchCaptionsSince(after, mode, token, setViewDay = false) {
+  let first = setViewDay;
+  while (true) {
+    const page = await getJson(`/api/captions?channel=${encodeURIComponent(channelId)}&date=${encodeURIComponent($('date').value)}&mode=${mode}&after=${after}&limit=1000`, { signal: loadAbort.signal });
+    if (token !== generation) return false;
+    if (first) { viewDay = page.day; first = false; }
+    if (page.rows.length) lastServerId = Math.max(lastServerId, page.rows.at(-1).id);
+    for (const row of page.rows) mode === 'raw' ? applyRecord(row) : applyCaption(row);
+    if (!page.hasMore) return true;
+    after = page.next;
+  }
+}
+
+async function resumeView() {
+  if (!channelId || loading || !viewDay || viewDay !== $('date').value) return loadView();
+  const token = ++generation;
+  closeStream(); loadAbort?.abort(); loadAbort = new AbortController();
+  const buffered = [];
+  openStream(token, buffered);
+  updateStatus();
+  try {
+    const mode = $('mode').value === 'raw' ? 'raw' : 'clean';
+    const completed = await fetchCaptionsSince(lastServerId, mode, token, false);
+    if (!completed) return;
+    bufferingLive = false;
+    for (const raw of buffered) handleLiveMessage(raw, true);
+    buffered.length = 0;
+    updateStatus(); render(); revealChrome();
+  } catch (error) {
+    if (token !== generation || error.name === 'AbortError') return;
+    bufferingLive = false;
+    for (const raw of buffered) handleLiveMessage(raw, true);
+    buffered.length = 0;
+    updateStatus(); render();
+  }
 }
 
 async function loadView() {
   keepChromeVisible();
   const token = ++generation;
-  stream?.close(); stream = null; loadAbort?.abort(); loadAbort = new AbortController();
-  captions = new Map(); records = new Map(); articles = new Map(); rawArticles = new Map(); dirtyStructure = true; cursor = 0;
+  closeStream(); loadAbort?.abort(); loadAbort = new AbortController();
+  captions = new Map(); records = new Map(); segmentIds = new Map(); lastServerId = 0; nextLiveId = 1; nextRecordId = 1;
+  articles = new Map(); rawArticles = new Map(); dirtyStructure = true;
   orderedCaptions = finalCaptions = orderedRecords = renderedRows = null; renderedCount = 0; renderedSlot = null; latestArticle = null;
   pendingCaptionUpdates.clear(); pendingRecordUpdates.clear();
   if (!channelId) { loading = false; updateStatus(); render(); return; }
   loading = true; updateStatus(); render();
+  const buffered = [];
+  openStream(token, buffered);
   try {
     const mode = $('mode').value === 'raw' ? 'raw' : 'clean';
-    let after = 0, first = true;
-    while (true) {
-      const page = await getJson(`/api/captions?channel=${encodeURIComponent(channelId)}&date=${encodeURIComponent($('date').value)}&mode=${mode}&after=${after}&limit=1000`, { signal: loadAbort.signal });
-      if (token !== generation) return;
-      if (first) { cursor = page.cursor; viewDay = page.day; first = false; }
-      for (const row of page.rows) mode === 'raw' ? applyRecord(row) : applyCaption(row);
-      scheduleRender();
-      if (!page.hasMore) break;
-      after = page.next;
-    }
-    loading = false; updateStatus(); render(); openStream(token); revealChrome();
+    const completed = await fetchCaptionsSince(0, mode, token, true);
+    if (!completed) return;
+    bufferingLive = false;
+    for (const raw of buffered) handleLiveMessage(raw, true);
+    buffered.length = 0;
+    loading = false; updateStatus(); render(); revealChrome();
   } catch (error) {
     if (token !== generation || error.name === 'AbortError') return;
+    closeStream();
     loading = false; controlState('채널 자막을 불러오지 못했습니다.'); render();
   }
 }
@@ -345,7 +446,10 @@ async function refreshChannels(manual = false) {
         if (!wasOnAir && isLiveChannel(channel) && $('date').value === config.today) {
           wantsLive = true; reload = true;
         }
-        if (reload) loadView();
+        if (reload) {
+          if (wantsLive && viewDay === $('date').value) resumeView();
+          else loadView();
+        }
       }
       const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString('ko-KR') : '방금';
       const onAirCount = playable.length;
@@ -380,8 +484,8 @@ async function start() {
 }
 
 $('connect').onchange = () => {
-  if (!$('connect').checked) { wantsLive = false; stream?.close(); stream = null; updateStatus(); keepChromeVisible(); }
-  else { wantsLive = true; channelId ? loadView() : refreshChannels(true); }
+  if (!$('connect').checked) { wantsLive = false; closeStream(); updateStatus(); keepChromeVisible(); }
+  else { wantsLive = true; channelId ? resumeView() : refreshChannels(true); }
 };
 $('channel').onchange = () => activateChannel($('channel').value);
 $('refresh-channels').onclick = () => refreshChannels(true);
@@ -466,8 +570,8 @@ document.addEventListener('visibilitychange', () => {
     keepScreen(); revealChrome();
   }
 });
-window.addEventListener('pagehide', () => { keepChromeVisible(); wakeSentinel?.release().catch(() => {}); stream?.close(); stream = null; });
-window.addEventListener('pageshow', event => { if (event.persisted) { if (wantsLive) loadView(); keepScreen(); revealChrome(); } });
+window.addEventListener('pagehide', () => { keepChromeVisible(); wakeSentinel?.release().catch(() => {}); closeStream(); });
+window.addEventListener('pageshow', event => { if (event.persisted) { if (wantsLive) resumeView(); keepScreen(); revealChrome(); } });
 window.addEventListener('resize', syncLayout, { passive: true });
 window.visualViewport?.addEventListener('resize', syncLayout, { passive: true });
 if (typeof ResizeObserver !== 'undefined') {

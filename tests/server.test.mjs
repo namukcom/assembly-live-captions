@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm';
 import { createApp } from '../server.mjs';
 
 const day = '2026-10-14', at = `${day}T08:00:00Z`, source = 'wss://example.test';
-const raw = (segment, text, final = false) => JSON.stringify({ segment, 'segment-offset': segment * 100,
+const raw = (segment, text, final = true) => JSON.stringify({ segment, 'segment-offset': segment * 100,
   transcript: text, final });
 
 async function start(t, options = {}) {
@@ -59,9 +59,9 @@ test('기록 스냅샷을 불러오는 동안의 수정도 SSE로 이어받고 �
 
 test('오늘 기록, TXT 저장, JSON 제거, 잘못된 요청과 오디오 비중계 경로를 확인한다', async t => {
   const { app, base } = await start(t);
-  app.store.ingest(raw(1, '초안'), source, at);
+  app.store.ingest(raw(1, '초안', false), source, at);
   app.store.ingest(raw(1, '확정 문장', true), source, at);
-  app.store.ingest(raw(2, '아직 작성 중'), source, at);
+  app.store.ingest(raw(2, '아직 작성 중', false), source, at);
   const final = await (await fetch(`${base}/api/captions?date=${day}&mode=final&limit=1`)).json();
   assert.equal(final.rows.length, 1); assert.equal(final.rows[0].text, '확정 문장');
   const txt = await (await fetch(`${base}/api/export?date=${day}&mode=final`)).text();
