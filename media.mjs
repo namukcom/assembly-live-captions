@@ -134,20 +134,23 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     if (!preservePreference) saveVideoPreference(false);
     attempt++; wanted = false; released = true; panel.hidden = true; pipActive = false;
     resetVideoConnection();
+    window.clearTimeout(chromeTimer); chromeTimer = null;
+    shell.classList.remove('controls-hidden');
+    if (historyChildren.length) $('fullscreen-history').replaceChildren();
+    historyNodes.clear(); historyChildren = []; historyDirty = true;
     exitPip(); exitFullscreen();
+    if ('mediaSession' in navigator) {
+      try { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } catch {}
+    }
     status('영상 정지'); updateControls(); onLayout();
   }
   function failure(message) {
-    wanted = false; attempt++; video.pause(); stopLoading(); status(message); updateControls();
-  }
-  function manifestUrl() { return `/api/video.m3u8?channel=${encodeURIComponent(channel.id)}`; }
-  function nativeUrl() {
-    return quality === 'auto' ? manifestUrl() : channel.videoSources?.find(source => String(source.height) === quality)?.url || manifestUrl();
+    stopVideo(); status(message);
   }
   function playbackUrl() {
-    const url = nativeUrl();
-    // The original player reloads the selected quality's master with a fresh query.
-    return `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+    const defaultUrl = channel.videoDefaultUrl || channel.audioUrl;
+    // Use the Assembly's own playlist unchanged, including its query parameters.
+    return quality === 'auto' ? defaultUrl : channel.videoSources?.find(source => String(source.height) === quality)?.url || defaultUrl;
   }
   function showQuality(height) {
     const suffix = height ? `${height}p` : player ? '화질 확인 중' : '브라우저 선택';
@@ -230,7 +233,6 @@ export function initMedia($, { onLayout = () => {} } = {}) {
             current.on(Hls.Events.ERROR, (_event, data) => {
               if (current !== player || !data.fatal) return;
               failure('영상 연결 실패 · 영상 재생을 다시 누르세요.');
-              current.destroy(); player = null; prepared = '';
             });
             current.attachMedia(video); current.loadSource(url);
           } else if (native) video.src = url;
@@ -238,7 +240,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
         }
         if (token !== version) return;
         prepared = key;
-      } catch (error) { if (token === version) status(error.message); }
+      } catch (error) { if (token === version) failure(error.message); }
     })();
     // Cleanup must run after assignment even when native HLS prepares synchronously.
     const job = task.finally(() => {
@@ -303,7 +305,6 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     else {
       if (wasVideo) { panel.hidden = false; onLayout(); }
       status(wasVideo ? '영상 채널 변경 중' : '영상 대기');
-      prepare();
       if (resume) playVideo({ automatic: true });
     }
     updateControls();
@@ -340,15 +341,19 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   async function toggleFullscreen() {
     if (expanded) { exitFullscreen(); return; }
     if (panel.hidden) return;
+    const token = version;
     if (inPip()) await exitPip();
+    if (token !== version || panel.hidden) return;
     try {
       if (shell.requestFullscreen) await shell.requestFullscreen();
       else if (shell.webkitRequestFullscreen) await shell.webkitRequestFullscreen();
       else throw Error('fullscreen unavailable');
     } catch {
+      if (token !== version || panel.hidden) return;
       shell.classList.add('is-expanded');
       status('확대 보기 · 브라우저 전체화면은 지원되지 않습니다.');
     }
+    if (token !== version || panel.hidden) { await exitFullscreen(); return; }
     fullscreenChanged();
     await requestLandscape();
   }
@@ -358,6 +363,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
       if (inPip()) await exitPip();
       else {
         if (expanded) await exitFullscreen();
+        if (token !== version || panel.hidden) return;
         if (video.requestPictureInPicture && document.pictureInPictureEnabled) await video.requestPictureInPicture();
         else video.webkitSetPresentationMode('picture-in-picture');
         // Do not let a pending browser request restore PIP after leaving the page.
