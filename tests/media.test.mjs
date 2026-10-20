@@ -14,7 +14,7 @@ const channel = id => ({ id, name: `위원회 ${id}`, onAir: true,
 const adaptiveChannel = id => ({ ...channel(id),
   videoDefaultUrl: `https://w-assembly.hscdn.com/assembly/${id}/master.m3u8` });
 
-function setup(t, { safari = false, delayed = false, mobile = false, restoredPip = false, savedEntries = [], initialQuality } = {}) {
+function setup(t, { safari = false, mse = !safari, delayed = false, mobile = false, restoredPip = false, savedEntries = [], initialQuality } = {}) {
   const nodes = {}, players = [], scripts = [], docEvents = {}, winEvents = {}, originals = new Map(), saved = new Map(savedEntries);
   const timers = new Map(), timerDelays = new Map();
   let nextTimer = 1, now = 0;
@@ -38,9 +38,10 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
   const $ = id => nodes[id] ??= element();
   $('media-panel').hidden = true;
   class Hls {
+    static DefaultConfig = { loader: class { abort() {} destroy() {} } };
     static Events = { ERROR: 'error', MANIFEST_PARSED: 'manifest', LEVEL_SWITCHED: 'level', LEVEL_SWITCHING: 'switching', LEVEL_LOADED: 'loaded' };
-    static isSupported() { return true; }
-    levels = []; _currentLevel = -1; loadLevel = -1; listeners = {}; immediateSwitches = [];
+    static isSupported() { return mse; }
+    levels = []; _currentLevel = 0; loadLevel = -1; listeners = {}; immediateSwitches = [];
     get currentLevel() { return this._currentLevel; }
     set currentLevel(level) {
       this._currentLevel = level; this.loadLevel = level;
@@ -59,10 +60,11 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
     loadSource(url) { this.url = url; queueMicrotask(() => {
       if (this.destroyed) return;
       const height = Number(url.match(/_(\d+)p\//)?.[1]);
-      this.levels = (height ? [height] : [240, 480, 720, 1080]).map(height => ({ height })); this.listeners.manifest?.();
+      this.levels = (this.options.pLoader ? [480, 720, 1080] : height ? [height] : [240, 480, 720, 1080]).map(height => ({ height })); this.listeners.manifest?.();
     }); }
     startLoad() { this.loading = true; } stopLoad() { this.loading = false; }
     destroy() { this.destroyed = true; this.loading = false; }
+    finishSwitch() { if (this.loadLevel >= 0) this._currentLevel = this.loadLevel; this.listeners.level?.(null, { level: this._currentLevel }); }
   }
   const document = { createElement: element, head: { append(script) { scripts.push(script); } },
     body: element(), fullscreenElement: null, pictureInPictureEnabled: true, pictureInPictureElement: null,
@@ -141,34 +143,33 @@ test('오디오↔영상 전환은 하나만 재생하고 국회 원본의 자�
   assert.equal($('video-options').hidden, true, '영상 스위치를 끄면 영상과 옵션을 함께 접는다');
 });
 
-test('자동 상향 전환은 버퍼를 한 번 비우고 자동 화질을 유지한다', async t => {
+test('원본 다중 화질의 자동 상향은 기존 버퍼를 강제로 비우지 않는다', async t => {
   const { $, controller, players } = setup(t);
   controller.setSource(adaptiveChannel('26')); await settle(); await startVideo($);
   const video = $('broadcast-video'), player = players.at(-1);
-  const switches = level => player.listeners.switching(null, { level });
+  const switches = level => player.listeners.switching?.(null, { level });
   switches(0); await settle();
   assert.deepEqual(player.immediateSwitches, [], '초기 240p 선택에서는 비우지 않는다');
   switches(3); switches(3); await settle();
-  assert.deepEqual(player.immediateSwitches, [3], '1080p 상향의 중복 요청은 한 번만 처리한다');
-  assert.equal(video.buffered.length, 0);
+  assert.deepEqual(player.immediateSwitches, [], '재생 중인 구간을 초기화하지 않는다');
+  assert.equal(video.buffered.length, 1);
   assert.equal(player.loadLevel, -1, '즉시 전환 후에도 자동 화질을 유지한다');
-  assert.equal(player.nextAutoLevel, 3, '다음 구간만 ABR이 고른 상향 화질로 요청한다');
   assert.equal($('video-quality').value, 'auto');
   assert.equal(video.paused, false);
   assert.equal(video.muted, false);
   assert.equal(player.latencyOverrides, 0);
   video.buffered.length = 1;
   switches(2); await settle();
-  assert.deepEqual(player.immediateSwitches, [3], '하향 전환은 재생기 기본 동작을 따른다');
+  assert.deepEqual(player.immediateSwitches, [], '하향 전환도 재생기 기본 동작을 따른다');
   switches(3); await settle();
-  assert.deepEqual(player.immediateSwitches, [3, 3], '다음 상향은 새로 한 번 처리한다');
+  assert.deepEqual(player.immediateSwitches, [], '반복 상향에서도 버퍼를 초기화하지 않는다');
 });
 
 test('철회된 상향이나 일시정지·빈 버퍼에서는 추가로 버퍼를 비우지 않는다', async t => {
   const { $, controller, players } = setup(t);
   controller.setSource(adaptiveChannel('26')); await settle(); await startVideo($);
   const video = $('broadcast-video'), player = players.at(-1);
-  const switches = level => player.listeners.switching(null, { level });
+  const switches = level => player.listeners.switching?.(null, { level });
   switches(0); switches(3); switches(0); await settle();
   assert.deepEqual(player.immediateSwitches, [], '이미 취소된 상향 요청을 실행하지 않는다');
   video.pause(); switches(3); await settle();
@@ -182,16 +183,16 @@ test('상향 예약 직후 채널이나 수동 화질을 바꾸면 이전 버퍼
   const { $, controller, players } = setup(t);
   controller.setSource(adaptiveChannel('26')); await settle(); await startVideo($);
   const old = players.at(-1);
-  old.listeners.switching(null, { level: 0 }); old.listeners.switching(null, { level: 3 });
+  old.listeners.switching?.(null, { level: 0 }); old.listeners.switching?.(null, { level: 3 });
   controller.setSource(adaptiveChannel('25')); await settle(); await settle();
   assert.equal(old.destroyed, true); assert.deepEqual(old.immediateSwitches, []);
-  old.listeners.switching(null, { level: 3 });
+  old.listeners.switching?.(null, { level: 3 });
   const current = players.at(-1);
-  current.listeners.switching(null, { level: 0 }); current.listeners.switching(null, { level: 3 });
+  current.listeners.switching?.(null, { level: 0 }); current.listeners.switching?.(null, { level: 3 });
   $('video-quality').value = '1080'; await $('video-quality').onchange(); await settle();
   assert.equal(current.destroyed, true); assert.deepEqual(current.immediateSwitches, []);
   const fixed = players.at(-1);
-  fixed.listeners.switching(null, { level: 0 }); await settle();
+  fixed.listeners.switching?.(null, { level: 0 }); await settle();
   assert.deepEqual(fixed.immediateSwitches, []);
   assert.equal(fixed.loadLevel, 0);
   assert.match(fixed.url, /25_1080p/);
@@ -242,7 +243,7 @@ test('국회 기본 화질이 720p여도 자동 모드는 480p 원본 주소로 
   assert.equal($('video-quality').value, 'auto');
   assert.equal(players.at(-1).url, next.videoSources.find(source => source.height === 480).url);
   assert.equal(players.at(-1).options.startLevel, 0);
-  assert.equal(players.at(-1).loadLevel, -1);
+  assert.equal(players.at(-1).loadLevel, 0);
 });
 
 test('전체화면 자막·분할·PIP 전환을 처리하고 오디오 전환 시 모두 종료한다', async t => {
@@ -752,7 +753,7 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 영상 끄기는 자막 DOM·타이머·P
   await $('fullscreen-toggle').onclick();
   $('caption-layout').value = 'split'; $('caption-layout').onchange();
   assert.equal($('fullscreen-history').children.length, 1);
-  assert.equal(timers.size, 2, '도구 숨김과 자동 화질 감시를 각각 예약한다');
+  assert.equal(timers.size, safari ? 1 : 2, '지원되는 재생기에서만 자동 화질을 감시한다');
   $('video-toggle').checked = false; $('video-toggle').onchange(); await settle();
   assert.equal($('fullscreen-history').children.length, 0);
   assert.equal(timers.size, 0);
@@ -856,11 +857,11 @@ async function setupAutomaticPlayback(t, { safari = false } = {}) {
   video.buffered.end = () => video.currentTime + buffer;
   video.getVideoPlaybackQuality = () => ({ totalVideoFrames: video.currentTime * 30, droppedVideoFrames: dropped });
   controller.setSource(channel('19')); await startVideo($); await settle();
-  const currentUrl = () => safari ? video.src : players.at(-1).url;
+  const currentUrl = () => safari ? video.src : players.at(-1).url.replace(/_\d+p\//, `_${players.at(-1).levels[players.at(-1).currentLevel]?.height}p/`);
   function observedQuality() {
     video.videoHeight = Number(currentUrl().match(/_(\d+)p\//)?.[1]);
     if (safari) video.emit('resize');
-    else players.at(-1).listeners.level(null, { level: 0 });
+    else players.at(-1).listeners.level(null, { level: players.at(-1).currentLevel });
   }
   observedQuality();
   return { ...context, video, currentUrl,
@@ -871,19 +872,20 @@ async function setupAutomaticPlayback(t, { safari = false } = {}) {
         if (!safari) {
           const player = players.at(-1);
           player.bandwidthEstimate = 20000000;
-          player.levels[0].bitrate = 5000000;
+          player.levels[player.currentLevel].bitrate = 5000000;
         }
         assert.equal(tickQuality(), true, '현재 재생의 화질 감시가 있어야 한다');
-        await settle(); observedQuality();
+        await settle(); if (!safari) players.at(-1).finishSwitch(); observedQuality();
       }
     },
   };
 }
 
-for (const safari of [false, true]) {
+for (const safari of [false]) {
 test(`${safari ? 'Safari' : 'HLS.js'}: 브라우저가 480→720→1080p 원본 주소로 상승하고 부담이 커지면 하향한다`, async t => {
   const context = await setupAutomaticPlayback(t, { safari });
   const { $, advance, currentUrl, players, video, setBuffer, fetchRequests } = context;
+  const loads = video.loadCalls, plays = video.playCalls, src = video.src;
   assert.match(currentUrl(), /19_480p/);
   await advance(safari ? 7 : 4);
   assert.match(currentUrl(), /19_720p/);
@@ -893,9 +895,13 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 브라우저가 480→720→1080p 원본 
   assert.equal($('video-quality').children[0].textContent, '자동 · 1080p');
   assert.equal(video.paused, false);
   assert.equal($('video-toggle').checked, true);
-  assert.ok(players.slice(0, -1).every(player => player.destroyed), '이전 화질의 플레이어를 해제한다');
+  assert.equal(players.length, 1, '자동 전환 내내 같은 재생기를 유지한다');
+  assert.deepEqual(players[0].immediateSwitches, [], '재생 중인 버퍼를 비우지 않는다');
+  assert.equal(video.loadCalls, loads); assert.equal(video.playCalls, plays); assert.equal(video.src, src);
+  assert.equal(video.buffered.length, 1, '화질 전환 후에도 이전 버퍼를 보존한다');
   setBuffer(0.5); await advance(2);
   assert.match(currentUrl(), /19_720p/);
+  assert.match($('media-status').textContent, /버퍼 부족/);
   assert.equal($('video-quality').value, 'auto', '하향해도 수동 모드로 바꾸지 않는다');
   assert.deepEqual(fetchRequests, [], '서버 재생 목록이나 별도 미디어 요청을 만들지 않는다');
 });
@@ -908,8 +914,8 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 상위 화질 원본 연결 오류는 낮
     if (safari) { video.error = { code: 2 }; video.emit('error'); }
     else players.at(-1).listeners.error(null, { fatal: true, type: 'networkError' });
   }
-  fail(); await settle(); assert.match(currentUrl(), /19_720p/);
-  fail(); await settle(); assert.match(currentUrl(), /19_480p/);
+  fail(); await settle(); players.at(-1).finishSwitch(); assert.match(currentUrl(), /19_720p/);
+  fail(); await settle(); players.at(-1).finishSwitch(); assert.match(currentUrl(), /19_480p/);
   assert.equal($('video-toggle').checked, true);
   video.emit('ended'); await settle();
   assert.equal($('video-toggle').checked, false);
@@ -917,6 +923,22 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 상위 화질 원본 연결 오류는 낮
   assert.ok(players.every(player => player.destroyed));
 });
 }
+
+test('Safari에서도 MSE 지원 시 버퍼를 유지하는 재생기를 사용한다', async t => {
+  const { $, controller, players } = setup(t, { safari: true, mse: true });
+  controller.setSource(channel('19')); await startVideo($); await settle();
+  assert.equal(players.length, 1);
+  assert.equal(typeof players[0].options.pLoader, 'function');
+  assert.match($('broadcast-video').src, /^blob:/);
+});
+
+test('기본 HLS만 지원하면 자동 주소 교체로 검은 화면을 반복하지 않는다', async t => {
+  const { $, controller, players, tickQuality } = setup(t, { safari: true });
+  controller.setSource(channel('19')); await startVideo($); await settle();
+  const video = $('broadcast-video'), loads = video.loadCalls, src = video.src;
+  for (let index = 0; index < 20; index++) assert.equal(tickQuality(), false);
+  assert.equal(video.src, src); assert.equal(video.loadCalls, loads); assert.equal(players.length, 0);
+});
 
 for (const action of ['off', 'manual', 'channel', 'audio', 'pagehide', 'pause']) {
 test(`${action}: 이전 재생의 자동 화질 콜백은 취소되어 새 재생에 관여하지 않는다`, async t => {

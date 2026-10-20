@@ -34,4 +34,5 @@ test('서버는 국회 원본 주소만 전달하고 영상 목록을 생성하�
   assert.equal(calls, 0);
   assert.equal((await fetch(`${url}/media.mjs`)).status, 200);
   assert.equal((await fetch(`${url}/adaptive-video.mjs`)).status, 200);
+  assert.equal((await fetch(`${url}/hls-variants.mjs`)).status, 200);
 });
