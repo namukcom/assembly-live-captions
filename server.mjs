@@ -20,6 +20,7 @@ const assets = new Map([
   ['/audio.mjs', ['audio.mjs', 'text/javascript; charset=utf-8']],
   ['/media.mjs', ['media.mjs', 'text/javascript; charset=utf-8']],
   ['/adaptive-video.mjs', ['adaptive-video.mjs', 'text/javascript; charset=utf-8']],
+  ['/hls-variants.mjs', ['hls-variants.mjs', 'text/javascript; charset=utf-8']],
   ['/lib/caption-format.mjs', ['lib/caption-format.mjs', 'text/javascript; charset=utf-8']],
 ]);
 

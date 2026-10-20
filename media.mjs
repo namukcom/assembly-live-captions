@@ -1,5 +1,6 @@
 import { initAudio, loadHls } from './audio.mjs';
 import { createAutoQuality } from './adaptive-video.mjs';
+import { originalVariantLoader } from './hls-variants.mjs';
 
 const inactiveBroadcast = /생중계없음|예정|중지|정회|종료|산회|폐회/;
 export function isLiveChannel(channel) {
@@ -22,6 +23,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
   let released = false, orientationManaged = false, orientationAttempt = 0;
   let pipActive = false, reloadAfterPip = false;
   let autoQuality = null, qualityTimer = null;
+  let qualityNote = '', nextQualityStart = '';
   const videoStorageKey = 'assembly-caption-video-enabled';
   const mutedStorageKey = 'assembly-caption-video-muted';
   let videoEnabled = false;
@@ -47,7 +49,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
       '재생 주소 확인 중' : state || '현재 방송 중이 아님';
     return `${selectedChannel.name} · ${reason}`;
   }
-  function playingStatus() { return video.muted ? '영상 재생 중 · 음소거' : '영상 재생 중'; }
+  function playingStatus() { return `${video.muted ? '영상 재생 중 · 음소거' : '영상 재생 중'}${qualityNote ? ` · ${qualityNote}` : ''}`; }
   function isFullscreen() { return document.fullscreenElement === shell || document.webkitFullscreenElement === shell; }
   function inPip() { return document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture'; }
   function supportedPip() {
@@ -126,10 +128,10 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
     }
     fullscreenChanged();
   }
-  function resetVideoConnection({ preserveAutoQuality = false } = {}) {
+  function resetVideoConnection() {
     version++;
     stopQualityMonitor();
-    if (!preserveAutoQuality) autoQuality = null;
+    autoQuality = null; qualityNote = ''; nextQualityStart = '';
     video.pause();
     const previous = player; player = null; previous?.destroy();
     prepared = ''; reloadManifest = false; reloadAfterPip = false;
@@ -150,26 +152,31 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
     status('영상 정지'); updateControls(); onLayout();
   }
   function failure(message) {
-    if (quality === 'auto' && wanted && autoQuality?.fallback()) { switchAutoSource(); return; }
+    if (player && quality === 'auto' && wanted && autoQuality?.fallback() && switchAutoSource()) return;
     stopVideo(); status(message);
   }
   function stopQualityMonitor() {
     window.clearTimeout(qualityTimer); qualityTimer = null;
   }
   function switchAutoSource() {
-    wanted = false; attempt++;
-    resetVideoConnection({ preserveAutoQuality: true });
-    playVideo({ automatic: true });
+    const level = player?.levels.findIndex(level => level.height === autoQuality?.height) ?? -1;
+    if (level < 0) return false;
+    // Do not pause, detach, seek, or flush: finish buffered media before switching.
+    player.loadLevel = level;
+    player.startLoad();
+    qualityNote = `자동 ${video.videoHeight || player.levels[player.currentLevel]?.height}p→${autoQuality.height}p 전환 대기 · ${autoQuality.reason}`;
+    status(playingStatus());
+    return true;
   }
   function startQualityMonitor() {
     stopQualityMonitor();
-    if (!autoQuality || quality !== 'auto' || !wanted || video.paused) return;
+    if (!player || !autoQuality || quality !== 'auto' || !wanted || video.paused) return;
     autoQuality.resume();
     const token = version;
     function sample() {
       qualityTimer = null;
       if (token !== version || !wanted || quality !== 'auto' || video.paused || !autoQuality) return;
-      if (document.visibilityState !== 'hidden' && !inPip()) {
+      if (document.visibilityState !== 'hidden' && !inPip() && player.levels[player.currentLevel]?.height === autoQuality.height) {
         let buffer = 0;
         for (let index = 0; index < video.buffered.length; index++) {
           if (video.buffered.start(index) <= video.currentTime && video.currentTime < video.buffered.end(index)) {
@@ -177,13 +184,14 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
           }
         }
         const frames = video.getVideoPlaybackQuality?.();
+        $('media-status').title = `버퍼 ${buffer.toFixed(1)}초 · 다운로드 ${((player.bandwidthEstimate || 0) / 1e6).toFixed(1)}Mbps · 프레임 드롭 ${frames?.droppedVideoFrames ?? '?'} / ${frames?.totalVideoFrames ?? '?'}`;
         const height = autoQuality.sample({ buffer, currentTime: video.currentTime,
           bandwidth: player?.bandwidthEstimate || navigator.connection?.downlink * 1e6,
-          bitrate: player?.levels[0]?.bitrate,
+          bitrate: player.levels[player.currentLevel]?.bitrate,
           totalFrames: frames?.totalVideoFrames ?? video.webkitDecodedFrameCount,
           droppedFrames: frames?.droppedVideoFrames ?? video.webkitDroppedFrameCount,
           saveData: Boolean(navigator.connection?.saveData) });
-        if (height) { switchAutoSource(); return; }
+        if (height) switchAutoSource();
       } else autoQuality.resume();
       qualityTimer = window.setTimeout(sample, 5000);
     }
@@ -235,43 +243,39 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
         const native = video.canPlayType('application/vnd.apple.mpegurl');
         const safari = /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|Android/.test(navigator.userAgent);
         const url = playbackUrl();
-        if (safari && native) {
+        let Hls = window.Hls;
+        if (!Hls && (!(safari && native) || autoQuality)) {
+          try { Hls = await loadHls(); } catch (error) { if (!native) throw error; }
+        }
+        if (token !== version) return;
+        if (safari && native && !Hls?.isSupported()) {
+          // Native HLS cannot change independent source URLs without resetting decoding.
+          autoQuality = null;
           video.src = url;
         } else {
-          const Hls = window.Hls || await loadHls();
-          if (token !== version) return;
           if (Hls.isSupported()) {
             const current = new Hls({ autoStartLoad: false, startLevel: 0, testBandwidth: false,
               maxBufferLength: 30, backBufferLength: 10,
+              ...(autoQuality ? { pLoader: originalVariantLoader(Hls, channel.videoSources) } : {}),
               abrBandWidthUpFactor: 0.65, capLevelOnFPSDrop: true });
             player = current;
-            let requestedHeight = 0, requestedLevel = -1, switchVersion = 0;
             current.on(Hls.Events.MANIFEST_PARSED, () => {
               if (current !== player) return;
               populateQuality(channel.videoSources?.map(source => source.height) || current.levels.map(level => level.height));
-              if (quality !== 'auto') current.loadLevel = 0;
+              if (autoQuality) {
+                autoQuality = createAutoQuality({ ...channel, videoDefaultUrl: url, videoSources: channel.videoSources.filter(source => current.levels.some(level => level.height === source.height)) }, now);
+              }
+              if (autoQuality || quality !== 'auto') current.loadLevel = Math.max(0, current.levels.findIndex(level => level.height === autoQuality?.height));
             });
             current.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-              if (current === player) showQuality(current.levels[data.level]?.height);
-            });
-            current.on(Hls.Events.LEVEL_SWITCHING, (_event, data) => {
               if (current !== player) return;
               const height = current.levels[data.level]?.height;
-              if (!height || data.level === requestedLevel) return;
-              const previousHeight = requestedHeight, token = ++switchVersion;
-              requestedHeight = height; requestedLevel = data.level;
-              if (quality !== 'auto' || !previousHeight || height <= previousHeight) return;
-              // Finish the level-controller event before interrupting its fragment load.
-              // Deduplicate repeated requests and discard upgrades superseded by a drop.
-              queueMicrotask(() => {
-                if (current !== player || token !== switchVersion || quality !== 'auto' || !wanted || !video.buffered.length) return;
-                // The public immediate-switch API flushes both tracks of our muxed HLS.
-                // Restore ABR immediately; pin only the next fragment to its chosen level.
-                current.currentLevel = data.level;
-                if (current !== player) return;
-                current.loadLevel = -1;
-                current.nextAutoLevel = data.level;
-              });
+              showQuality(height);
+              if (autoQuality && height === autoQuality.height) {
+                qualityNote = `${nextQualityStart || `자동 ${height}p`} · ${autoQuality.reason}`;
+                nextQualityStart = '';
+                if (wanted && !video.paused) status(playingStatus());
+              }
             });
             current.on(Hls.Events.ERROR, (_event, data) => {
               if (current !== player || !data.fatal) return;
@@ -300,7 +304,10 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
       wanted = false; attempt++; resetVideoConnection();
     }
     audio.reset(); released = false;
-    if (quality === 'auto' && !autoQuality) autoQuality = createAutoQuality(channel, now);
+    if (quality === 'auto' && !autoQuality) {
+      autoQuality = createAutoQuality(channel, now);
+      if (autoQuality) qualityNote = nextQualityStart || `자동 ${autoQuality.height}p에서 시작`;
+    }
     panel.hidden = false; wanted = true;
     const token = ++attempt;
     updateControls(); onLayout(); status('영상 연결 중');
@@ -341,7 +348,9 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
     }
     const resume = videoEnabled;
     const wasVideo = !panel.hidden;
+    const sourceChanged = Boolean(channel && valid);
     attempt++; wanted = false; resetVideoConnection();
+    nextQualityStart = sourceChanged ? '채널·재생 주소 변경으로 초기화' : '';
     channel = valid; sourceKey = key; released = false;
     audio.setSource(valid?.audioUrl || '', unavailableMessage());
     populateQuality(valid?.videoSources?.map(source => source.height) || []);
