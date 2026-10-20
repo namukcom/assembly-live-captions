@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseBroadcastPage } from '../lib/broadcast-config.mjs';
+import { originalVariantLoader } from '../hls-variants.mjs';
 import { createApp } from '../server.mjs';
 
 const base = 'https://w-assembly.hscdn.com/assembly/';
@@ -35,4 +36,30 @@ test('서버는 국회 원본 주소만 전달하고 영상 목록을 생성하�
   assert.equal((await fetch(`${url}/media.mjs`)).status, 200);
   assert.equal((await fetch(`${url}/adaptive-video.mjs`)).status, 200);
   assert.equal((await fetch(`${url}/hls-variants.mjs`)).status, 200);
+});
+
+test('m3u8에 RESOLUTION이 없어도 xhls(videoSources)의 화질 기준을 사용해 다중 화질 목록을 구성한다', async () => {
+  const bokjiSources = [240, 480, 720, 1080].map(height => ({
+    height, url: `https://m.webcast.go.kr/live/bokji_${height}p/playlist.m3u8`,
+  }));
+  const bokjiPlaylist = height => `#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS="avc1.4d4028,mp4a.40.2"\n/live/bokji_${height}p/media.m3u8?sid=${height}\n`;
+  class BaseLoader {
+    load(context, _config, callbacks) {
+      callbacks.onSuccess({ url: context.url, data: bokjiPlaylist(1080) }, {}, context, null);
+    }
+    abort() {}
+    destroy() {}
+  }
+  const Loader = originalVariantLoader({ DefaultConfig: { loader: BaseLoader } }, bokjiSources, async url => {
+    const height = Number(url.match(/_(\d+)p\//)?.[1]);
+    return { ok: true, url, text: async () => bokjiPlaylist(height) };
+  });
+  const loader = new Loader({});
+  let combined = '';
+  await new Promise(resolve => {
+    loader.load({ type: 'manifest', url: bokjiSources[3].url }, {}, {
+      onSuccess(response) { combined = response.data; resolve(); },
+    });
+  });
+  assert.match(combined, /RESOLUTION=854x480[\s\S]*bokji_480p[\s\S]*RESOLUTION=1280x720[\s\S]*bokji_720p[\s\S]*RESOLUTION=1920x1080[\s\S]*bokji_1080p/);
 });
