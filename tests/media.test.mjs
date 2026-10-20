@@ -16,12 +16,12 @@ const adaptiveChannel = id => ({ ...channel(id),
 
 function setup(t, { safari = false, delayed = false, mobile = false, restoredPip = false, savedEntries = [], initialQuality } = {}) {
   const nodes = {}, players = [], scripts = [], docEvents = {}, winEvents = {}, originals = new Map(), saved = new Map(savedEntries);
-  const timers = new Map();
-  let nextTimer = 1;
+  const timers = new Map(), timerDelays = new Map();
+  let nextTimer = 1, now = 0;
   const element = () => {
     const classes = new Set(), events = {};
     return { value: '', textContent: '', hidden: false, disabled: false, checked: false, children: [], attributes: {},
-      src: '', buffered: { length: 0 }, readyState: 2, paused: true, muted: false, seekable: { length: 0 }, scrollHeight: 300, clientHeight: 100, scrollTop: 200,
+      src: '', currentTime: 0, buffered: { length: 0, start() { return 0; }, end() { return 10; } }, readyState: 2, paused: true, muted: false, seekable: { length: 0 }, scrollHeight: 300, clientHeight: 100, scrollTop: 200,
       classList: { contains: value => classes.has(value), add: value => classes.add(value), remove: value => classes.delete(value),
         toggle(value, force) { if (force ?? !classes.has(value)) classes.add(value); else classes.delete(value); } },
       contains() { return false; },
@@ -32,7 +32,7 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
       canPlayType() { return safari ? 'maybe' : ''; },
       playCalls: 0, play() { this.playCalls++; this.buffered.length = 1; this.paused = false; this.emit('playing'); return Promise.resolve(); },
       pause() { this.paused = true; this.emit('pause'); },
-      loadCalls: 0, load() { this.loadCalls++; this.buffered.length = 0; }, removeAttribute(name) { if (name === 'src') this.src = ''; },
+      loadCalls: 0, load() { this.loadCalls++; this.buffered.length = 0; this.error = null; }, removeAttribute(name) { if (name === 'src') this.src = ''; },
     };
   };
   const $ = id => nodes[id] ??= element();
@@ -74,7 +74,8 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
   $('broadcast-video').requestPictureInPicture = async () => { document.pictureInPictureElement = $('broadcast-video'); $('broadcast-video').emit('enterpictureinpicture'); };
   if (restoredPip) document.pictureInPictureElement = $('broadcast-video');
   const window = { Hls: delayed ? undefined : Hls, localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); }, removeItem(key) { saved.delete(key); } },
-    setTimeout(fn) { const id = nextTimer++; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
+    setTimeout(fn, delay) { const id = nextTimer++; timers.set(id, fn); timerDelays.set(id, delay); return id; },
+    clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
     addEventListener(name, fn) { winEvents[name] = fn; } };
   const fetchRequests = [];
   const mediaSession = { metadata: null, playbackState: 'none', actions: {},
@@ -85,9 +86,16 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
   }
   t.after(() => { for (const [name, descriptor] of originals) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name]; });
-  const controller = initMedia($);
+  const controller = initMedia($, { now: () => now });
   if (initialQuality) { $('video-quality').value = initialQuality; $('video-quality').onchange(); }
-  return { $, controller, players, document, window, scripts, Hls, docEvents, winEvents, saved, fetchRequests, timers, mediaSession };
+  return { $, controller, players, document, window, scripts, Hls, docEvents, winEvents, saved, fetchRequests, timers, mediaSession,
+    tickQuality() {
+      const entry = [...timers].find(([id]) => timerDelays.get(id) === 5000);
+      if (!entry) return false;
+      const [id, callback] = entry; timers.delete(id); timerDelays.delete(id);
+      now += 5000; $('broadcast-video').currentTime += 5; callback(); return true;
+    },
+  };
 }
 
 test('오디오↔영상 전환은 하나만 재생하고 국회 원본의 자동 및 직접 화질을 제공한다', async t => {
@@ -225,14 +233,14 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 영상도 오디오처럼 마지막 재�
 });
 }
 
-test('초기 채널이 비어 있어도 나중에 확인한 국회 기본 영상 주소로 재생한다', async t => {
+test('국회 기본 화질이 720p여도 자동 모드는 480p 원본 주소로 시작한다', async t => {
   const { $, controller, players } = setup(t);
   controller.setSource(null);
   const next = channel('19');
   next.videoDefaultUrl = next.videoSources.find(source => source.height === 720).url;
   controller.setSource(next); await settle(); await startVideo($);
   assert.equal($('video-quality').value, 'auto');
-  assert.equal(players.at(-1).url, next.videoDefaultUrl);
+  assert.equal(players.at(-1).url, next.videoSources.find(source => source.height === 480).url);
   assert.equal(players.at(-1).options.startLevel, 0);
   assert.equal(players.at(-1).loadLevel, -1);
 });
@@ -744,7 +752,7 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 영상 끄기는 자막 DOM·타이머·P
   await $('fullscreen-toggle').onclick();
   $('caption-layout').value = 'split'; $('caption-layout').onchange();
   assert.equal($('fullscreen-history').children.length, 1);
-  assert.equal(timers.size, 1);
+  assert.equal(timers.size, 2, '도구 숨김과 자동 화질 감시를 각각 예약한다');
   $('video-toggle').checked = false; $('video-toggle').onchange(); await settle();
   assert.equal($('fullscreen-history').children.length, 0);
   assert.equal(timers.size, 0);
@@ -839,3 +847,93 @@ test('라이브러리 로딩 중 끄면 완료 후에도 플레이어나 재생�
   await controller.play();
   assert.equal($('broadcast-audio').playCalls, 1);
 });
+
+async function setupAutomaticPlayback(t, { safari = false } = {}) {
+  const context = setup(t, { safari });
+  const { $, controller, players, tickQuality } = context;
+  const video = $('broadcast-video');
+  let buffer = 6, dropped = 0;
+  video.buffered.end = () => video.currentTime + buffer;
+  video.getVideoPlaybackQuality = () => ({ totalVideoFrames: video.currentTime * 30, droppedVideoFrames: dropped });
+  controller.setSource(channel('19')); await startVideo($); await settle();
+  const currentUrl = () => safari ? video.src : players.at(-1).url;
+  function observedQuality() {
+    video.videoHeight = Number(currentUrl().match(/_(\d+)p\//)?.[1]);
+    if (safari) video.emit('resize');
+    else players.at(-1).listeners.level(null, { level: 0 });
+  }
+  observedQuality();
+  return { ...context, video, currentUrl,
+    setBuffer(value) { buffer = value; },
+    dropFrames(value) { dropped += value; },
+    async advance(count) {
+      for (let index = 0; index < count; index++) {
+        if (!safari) {
+          const player = players.at(-1);
+          player.bandwidthEstimate = 20000000;
+          player.levels[0].bitrate = 5000000;
+        }
+        assert.equal(tickQuality(), true, '현재 재생의 화질 감시가 있어야 한다');
+        await settle(); observedQuality();
+      }
+    },
+  };
+}
+
+for (const safari of [false, true]) {
+test(`${safari ? 'Safari' : 'HLS.js'}: 브라우저가 480→720→1080p 원본 주소로 상승하고 부담이 커지면 하향한다`, async t => {
+  const context = await setupAutomaticPlayback(t, { safari });
+  const { $, advance, currentUrl, players, video, setBuffer, fetchRequests } = context;
+  assert.match(currentUrl(), /19_480p/);
+  await advance(safari ? 7 : 4);
+  assert.match(currentUrl(), /19_720p/);
+  assert.equal($('video-quality').children[0].textContent, '자동 · 720p');
+  await advance(safari ? 7 : 4);
+  assert.match(currentUrl(), /19_1080p/);
+  assert.equal($('video-quality').children[0].textContent, '자동 · 1080p');
+  assert.equal(video.paused, false);
+  assert.equal($('video-toggle').checked, true);
+  assert.ok(players.slice(0, -1).every(player => player.destroyed), '이전 화질의 플레이어를 해제한다');
+  setBuffer(0.5); await advance(2);
+  assert.match(currentUrl(), /19_720p/);
+  assert.equal($('video-quality').value, 'auto', '하향해도 수동 모드로 바꾸지 않는다');
+  assert.deepEqual(fetchRequests, [], '서버 재생 목록이나 별도 미디어 요청을 만들지 않는다');
+});
+
+test(`${safari ? 'Safari' : 'HLS.js'}: 상위 화질 원본 연결 오류는 낮은 화질로 복귀하고 방송 종료는 정지한다`, async t => {
+  const { $, advance, currentUrl, players, video, timers } = await setupAutomaticPlayback(t, { safari });
+  await advance(safari ? 14 : 8);
+  assert.match(currentUrl(), /19_1080p/);
+  function fail() {
+    if (safari) { video.error = { code: 2 }; video.emit('error'); }
+    else players.at(-1).listeners.error(null, { fatal: true, type: 'networkError' });
+  }
+  fail(); await settle(); assert.match(currentUrl(), /19_720p/);
+  fail(); await settle(); assert.match(currentUrl(), /19_480p/);
+  assert.equal($('video-toggle').checked, true);
+  video.emit('ended'); await settle();
+  assert.equal($('video-toggle').checked, false);
+  assert.equal(video.src, ''); assert.equal(timers.size, 0);
+  assert.ok(players.every(player => player.destroyed));
+});
+}
+
+for (const action of ['off', 'manual', 'channel', 'audio', 'pagehide', 'pause']) {
+test(`${action}: 이전 재생의 자동 화질 콜백은 취소되어 새 재생에 관여하지 않는다`, async t => {
+  const { $, controller, players, timers, tickQuality, winEvents, video } = await setupAutomaticPlayback(t);
+  const stale = [...timers.values()][0];
+  if (action === 'off') controller.stop();
+  if (action === 'manual') { $('video-quality').value = '1080'; await $('video-quality').onchange(); }
+  if (action === 'channel') controller.setSource(channel('25'));
+  if (action === 'audio') { $('audio-toggle').checked = true; await $('audio-toggle').onchange(); }
+  if (action === 'pagehide') winEvents.pagehide();
+  if (action === 'pause') video.pause();
+  await settle();
+  const count = players.length, source = video.src;
+  stale(); await settle();
+  assert.equal(players.length, count);
+  assert.equal(video.src, source);
+  if (action === 'channel') assert.match(players.at(-1).url, /25_480p/);
+  else assert.equal(tickQuality(), false, '이전 화질 감시 타이머를 남기지 않는다');
+});
+}

@@ -1,4 +1,5 @@
 import { initAudio, loadHls } from './audio.mjs';
+import { createAutoQuality } from './adaptive-video.mjs';
 
 const inactiveBroadcast = /생중계없음|예정|중지|정회|종료|산회|폐회/;
 export function isLiveChannel(channel) {
@@ -11,7 +12,7 @@ export function canReceiveCaptions(channel) {
   return Boolean(isLiveChannel(channel) && channel.source);
 }
 
-export function initMedia($, { onLayout = () => {} } = {}) {
+export function initMedia($, { onLayout = () => {}, now = () => performance.now() } = {}) {
   const video = $('broadcast-video'), shell = $('media-shell'), panel = $('media-panel');
   let channel = null, selectedChannel = null, sourceKey = '', player = null, prepared = '', preparing = null;
   let version = 0, preparingVersion = -1, attempt = 0, wanted = false, reloadManifest = false;
@@ -20,6 +21,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   const historyNodes = new Map(), placeholderKey = Symbol('caption-placeholder');
   let released = false, orientationManaged = false, orientationAttempt = 0;
   let pipActive = false, reloadAfterPip = false;
+  let autoQuality = null, qualityTimer = null;
   const videoStorageKey = 'assembly-caption-video-enabled';
   const mutedStorageKey = 'assembly-caption-video-muted';
   let videoEnabled = false;
@@ -85,6 +87,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     } catch {}
   }
   function stopLoading() {
+    stopQualityMonitor();
     if (!player) return;
     if (!player.levels.length) reloadManifest = true;
     player.stopLoad();
@@ -123,8 +126,10 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     }
     fullscreenChanged();
   }
-  function resetVideoConnection() {
+  function resetVideoConnection({ preserveAutoQuality = false } = {}) {
     version++;
+    stopQualityMonitor();
+    if (!preserveAutoQuality) autoQuality = null;
     video.pause();
     const previous = player; player = null; previous?.destroy();
     prepared = ''; reloadManifest = false; reloadAfterPip = false;
@@ -145,12 +150,50 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     status('영상 정지'); updateControls(); onLayout();
   }
   function failure(message) {
+    if (quality === 'auto' && wanted && autoQuality?.fallback()) { switchAutoSource(); return; }
     stopVideo(); status(message);
+  }
+  function stopQualityMonitor() {
+    window.clearTimeout(qualityTimer); qualityTimer = null;
+  }
+  function switchAutoSource() {
+    wanted = false; attempt++;
+    resetVideoConnection({ preserveAutoQuality: true });
+    playVideo({ automatic: true });
+  }
+  function startQualityMonitor() {
+    stopQualityMonitor();
+    if (!autoQuality || quality !== 'auto' || !wanted || video.paused) return;
+    autoQuality.resume();
+    const token = version;
+    function sample() {
+      qualityTimer = null;
+      if (token !== version || !wanted || quality !== 'auto' || video.paused || !autoQuality) return;
+      if (document.visibilityState !== 'hidden' && !inPip()) {
+        let buffer = 0;
+        for (let index = 0; index < video.buffered.length; index++) {
+          if (video.buffered.start(index) <= video.currentTime && video.currentTime < video.buffered.end(index)) {
+            buffer = video.buffered.end(index) - video.currentTime; break;
+          }
+        }
+        const frames = video.getVideoPlaybackQuality?.();
+        const height = autoQuality.sample({ buffer, currentTime: video.currentTime,
+          bandwidth: player?.bandwidthEstimate || navigator.connection?.downlink * 1e6,
+          bitrate: player?.levels[0]?.bitrate,
+          totalFrames: frames?.totalVideoFrames ?? video.webkitDecodedFrameCount,
+          droppedFrames: frames?.droppedVideoFrames ?? video.webkitDroppedFrameCount,
+          saveData: Boolean(navigator.connection?.saveData) });
+        if (height) { switchAutoSource(); return; }
+      } else autoQuality.resume();
+      qualityTimer = window.setTimeout(sample, 5000);
+    }
+    qualityTimer = window.setTimeout(sample, 5000);
   }
   function playbackUrl() {
     const defaultUrl = channel.videoDefaultUrl || channel.audioUrl;
     // Use the Assembly's own playlist unchanged, including its query parameters.
-    return quality === 'auto' ? defaultUrl : channel.videoSources?.find(source => String(source.height) === quality)?.url || defaultUrl;
+    const height = quality === 'auto' ? autoQuality?.height : Number(quality);
+    return channel.videoSources?.find(source => source.height === height)?.url || defaultUrl;
   }
   function showQuality(height) {
     const suffix = height ? `${height}p` : player ? '화질 확인 중' : '브라우저 선택';
@@ -257,6 +300,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
       wanted = false; attempt++; resetVideoConnection();
     }
     audio.reset(); released = false;
+    if (quality === 'auto' && !autoQuality) autoQuality = createAutoQuality(channel, now);
     panel.hidden = false; wanted = true;
     const token = ++attempt;
     updateControls(); onLayout(); status('영상 연결 중');
@@ -445,14 +489,15 @@ export function initMedia($, { onLayout = () => {} } = {}) {
   };
   video.addEventListener('playing', () => {
     if (!wanted) { video.pause(); return; }
-    status(playingStatus()); updateControls(); mediaSession(); revealControls();
+    status(playingStatus()); updateControls(); mediaSession(); revealControls(); startQualityMonitor();
   });
   video.addEventListener('pause', () => {
     if (!video.paused) return;
+    stopQualityMonitor();
     if (wanted) { saveVideoPreference(false); wanted = false; attempt++; stopLoading(); status('영상 일시정지'); }
     updateControls(); revealControls(); if (!panel.hidden) mediaSession();
   });
-  video.addEventListener('waiting', () => { if (wanted) status('영상 버퍼링 중'); });
+  video.addEventListener('waiting', () => { if (wanted) { if (qualityTimer !== null) autoQuality?.stall(); status('영상 버퍼링 중'); } });
   for (const name of ['loadedmetadata', 'loadeddata']) video.addEventListener(name, updateControls);
   video.addEventListener('volumechange', () => {
     saveMutedPreference();
@@ -460,7 +505,7 @@ export function initMedia($, { onLayout = () => {} } = {}) {
     updateControls();
   });
   video.addEventListener('resize', () => { if (!player) showQuality(video.videoHeight); });
-  video.addEventListener('ended', () => failure('방송 영상 종료'));
+  video.addEventListener('ended', () => { stopVideo(); status('방송 영상 종료'); });
   video.addEventListener('error', () => { if (video.error && !panel.hidden) { prepared = ''; failure('영상 연결 실패 · 다시 시도하세요.'); } });
   for (const name of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged']) video.addEventListener(name, pipChanged);
   for (const name of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(name, fullscreenChanged);
