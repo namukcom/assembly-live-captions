@@ -18,7 +18,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
   let channel = null, selectedChannel = null, sourceKey = '', player = null, prepared = '', preparing = null;
   let version = 0, preparingVersion = -1, attempt = 0, wanted = false, reloadManifest = false;
   let quality = 'auto', expanded = false, chromeTimer = null, keyboardNavigation = false;
-  let captionRows = [], historyDirty = true, historyChildren = [];
+  let captionRows = [], captionLive = true, overlayDirty = true, historyDirty = true, historyChildren = [];
   const historyNodes = new Map(), placeholderKey = Symbol('caption-placeholder');
   let released = false, orientationManaged = false, orientationAttempt = 0;
   let pipActive = false, reloadAfterPip = false;
@@ -132,6 +132,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
     version++;
     stopQualityMonitor();
     autoQuality = null; qualityNote = ''; nextQualityStart = '';
+    $('media-status').title = '';
     video.pause();
     const previous = player; player = null; previous?.destroy();
     prepared = ''; reloadManifest = false; reloadAfterPip = false;
@@ -161,11 +162,11 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
   function switchAutoSource() {
     const level = player?.levels.findIndex(level => level.height === autoQuality?.height) ?? -1;
     if (level < 0) return false;
-    // Do not pause, detach, seek, or flush: finish buffered media before switching.
-    player.loadLevel = level;
+    player.currentLevel = level;
     player.startLoad();
-    qualityNote = `자동 ${video.videoHeight || player.levels[player.currentLevel]?.height}p→${autoQuality.height}p 전환 대기 · ${autoQuality.reason}`;
-    status(playingStatus());
+    showQuality(autoQuality.height);
+    qualityNote = `자동 ${autoQuality.height}p · ${autoQuality.reason}`;
+    if (wanted && !video.paused) status(playingStatus());
     return true;
   }
   function startQualityMonitor() {
@@ -231,7 +232,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
     showQuality(0);
     // Like the original player, switching quality starts a fresh selected source.
     if (resume) return playVideo();
-    return prepare();
+    return Promise.resolve();
   }
   function prepare() {
     if (!channel || released || prepared === sourceKey) return Promise.resolve();
@@ -242,7 +243,6 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
       try {
         const native = video.canPlayType('application/vnd.apple.mpegurl');
         const safari = /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|Android/.test(navigator.userAgent);
-        const url = playbackUrl();
         let Hls = window.Hls;
         if (!Hls && (!(safari && native) || autoQuality)) {
           try { Hls = await loadHls(); } catch (error) { if (!native) throw error; }
@@ -251,8 +251,9 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
         if (safari && native && !Hls?.isSupported()) {
           // Native HLS cannot change independent source URLs without resetting decoding.
           autoQuality = null;
-          video.src = url;
+          video.src = playbackUrl();
         } else {
+          const url = playbackUrl();
           if (Hls.isSupported()) {
             const current = new Hls({ autoStartLoad: false, startLevel: 0, testBandwidth: false,
               maxBufferLength: 30, backBufferLength: 10,
@@ -308,7 +309,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
       autoQuality = createAutoQuality(channel, now);
       if (autoQuality) qualityNote = nextQualityStart || `자동 ${autoQuality.height}p에서 시작`;
     }
-    panel.hidden = false; wanted = true;
+    panel.hidden = false; wanted = true; updateOverlay();
     const token = ++attempt;
     updateControls(); onLayout(); status('영상 연결 중');
     if (prepared !== sourceKey) {
@@ -425,21 +426,28 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
     } catch { status('PIP 전환 실패 · 브라우저 설정을 확인하세요.'); }
     updateControls();
   }
-  function setCaptions(rows, { live = true } = {}) {
+  function updateOverlay() {
+    if (!overlayDirty) return;
+    overlayDirty = false;
     const latest = [];
-    if (live) for (let index = rows.length - 1; index >= 0 && latest.length < 3; index--) {
-      if (rows[index].text?.trim()) latest.push(rows[index].text);
+    if (captionLive) for (let index = captionRows.length - 1; index >= 0 && latest.length < 3; index--) {
+      if (captionRows[index].text?.trim()) latest.push(captionRows[index].text);
     }
     latest.reverse();
-    captionRows = live ? rows : []; historyDirty = true;
     const overlay = latest.join('\n');
     // Keep the end of a long utterance visible rather than clipping new words.
-    const nextOverlay = overlay.slice(-270) || (live ? '새 자막을 기다리고 있습니다.' : '실시간 자막은 오늘 날짜에서 표시됩니다.');
+    const nextOverlay = overlay.slice(-270) || (captionLive ? '새 자막을 기다리고 있습니다.' : '실시간 자막은 오늘 날짜에서 표시됩니다.');
     if ($('caption-overlay-text').textContent !== nextOverlay) $('caption-overlay-text').textContent = nextOverlay;
+  }
+  function setCaptions(rows, { live = true } = {}) {
+    captionRows = live ? rows : []; captionLive = live;
+    historyDirty = true; overlayDirty = true;
+    if (!panel.hidden || !rows.length) updateOverlay();
     syncCaptionPresentation();
   }
   function syncCaptionPresentation() {
     if (!expanded || panel.hidden) return;
+    updateOverlay();
     if (!shell.classList.contains('caption-layout-split')) {
       if (!shell.classList.contains('caption-layout-off')) $('caption-overlay-text').scrollTop = $('caption-overlay-text').scrollHeight;
       return;
@@ -543,7 +551,7 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
       navigator.mediaSession.setActionHandler('play', () => panel.hidden ? audio.play() : playVideo());
       navigator.mediaSession.setActionHandler('pause', () => {
         if (panel.hidden) audio.pause();
-        else { saveVideoPreference(false); wanted = false; attempt++; video.pause(); stopLoading(); updateControls(); }
+        else { saveVideoPreference(false); wanted = false; attempt++; video.pause(); stopLoading(); status('영상 일시정지'); updateControls(); revealControls(); mediaSession(); }
       });
       navigator.mediaSession.setActionHandler('stop', () => { audio.pause(); stopVideo(); });
     } catch {}

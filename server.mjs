@@ -134,6 +134,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
     heartbeat.unref?.();
   }
   const sendCaption = (channelId, item) => {
+    if (!item.caption && !item.record?.text?.trim()) return;
     let payload = null;
     for (const sub of subscribers) {
       if (sub.channelId === channelId && sub.day === item.day) {
@@ -226,7 +227,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
       }
       if (url.pathname === '/api/events') {
         const channel = selectedChannel(url), day = dayParam(url);
-        const since = integer(request.headers['last-event-id'] ?? url.searchParams.get('since'), store.cursor());
+        const currentCursor = store.cursor(), since = integer(request.headers['last-event-id'] ?? url.searchParams.get('since'), currentCursor);
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
         if (request.method === 'HEAD') { response.end(); return; }
@@ -237,10 +238,13 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
         // No asynchronous gap between replaying missed records and subscribing to new ones.
         const backlog = store.eventsAfter(since, day, channel.source, 5001,
           channelManager ? channel.id : null, channel.historySources);
-        if (backlog.length > 5000 || since > store.cursor()) {
+        if (backlog.length > 5000 || since > currentCursor) {
           event(response, 'reset', { reason: '서버 기록을 다시 불러옵니다.' });
         } else {
-          for (const item of backlog) if (!event(response, 'caption', item, item.cursor)) break;
+          for (const item of backlog) {
+            if (!item.caption && !item.record?.text?.trim()) continue;
+            if (!event(response, 'caption', item, item.cursor)) break;
+          }
         }
         event(response, 'status', channelManager?.collectors.get(channel.id)?.state ?? collector?.state ?? { state: 'stopped' });
         response.on('close', () => {
