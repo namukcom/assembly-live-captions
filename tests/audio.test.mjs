@@ -33,11 +33,12 @@ test('Android Edge에서는 HLS.js를 준비하고 스위치 입력 안에서 �
   }
   t.after(() => { for (const [name, descriptor] of original) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name]; });
   const controller = initAudio($); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(players.length, 1); assert.equal(players[0].options.autoStartLoad, false);
-  assert.equal(players[0].source, 'https://original-broadcast.test/live.m3u8');
+  assert.equal(players.length, 0, '스위치가 꺼져 있으면 주소가 있어도 플레이어를 만들지 않는다');
   $('audio-toggle').checked = true;
   const playing = $('audio-toggle').onchange();
   assert.equal(audio.playCalls, 1, 'play called before awaiting a network or library load'); await playing;
+  assert.equal(players.length, 1); assert.equal(players[0].options.autoStartLoad, false);
+  assert.equal(players[0].source, 'https://original-broadcast.test/live.m3u8');
   assert.equal(saved.has('assembly-caption-audio-enabled'), false);
   assert.equal($('audio-status').textContent, '오디오 재생 중');
   handlers.pause(); assert.equal(players[0].stopped, true);
@@ -103,7 +104,8 @@ function blockedHls(t, userAgent) {
     static isSupported() { return true; }
     levels = []; loadingManifest = false; sourceLoads = 0;
     constructor() { players.push(this); }
-    on() {} attachMedia() {} destroy() {}
+    on() {} attachMedia() {}
+    destroy() { this.destroyed = true; this.loadingManifest = false; }
     loadSource() { this.sourceLoads++; this.loadingManifest = true; this.levels = []; }
     startLoad() {} // HLS startLoad does not restart an aborted initial manifest request.
     stopLoad() { this.loadingManifest = false; }
@@ -152,22 +154,25 @@ test(`${browser}: 새 페이지는 자동 재생하지 않고 수동 재생 차�
   assert.match($('audio-status').textContent, /자동 재생 차단됨/);
 });
 
-test(`${browser}: 자동재생 차단으로 초기 HLS 목록이 취소되어도 스위치 입력 안에서 재요청하고 재생한다`, async t => {
+test(`${browser}: 자동재생 차단·끄기 후 새 HLS 연결을 사용자 입력 안에서 만들고 재생한다`, async t => {
   const { $, audio, players, toggle, controller } = blockedHls(t, userAgent);
   await new Promise(resolve => setImmediate(resolve));
   await controller.play();
   assert.equal(players[0].loadingManifest, false);
   const playing = toggle(true);
   assert.deepEqual(audio.playGestures, [false, true], '수동 재생은 비동기 준비를 기다리지 않고 사용자 입력 안에서 호출한다');
-  assert.equal(players.length, 1, '기존 미디어 연결을 유지한다');
-  assert.equal(players[0].finishManifest(), true, '중단된 초기 방송 목록을 다시 불러온다');
+  assert.equal(players.length, 2, '해제한 미디어 연결은 새로 만든다');
+  assert.equal(players[0].destroyed, true);
+  assert.equal(players[1].finishManifest(), true, '새 연결의 방송 목록을 불러온다');
   await playing;
   assert.equal($('audio-toggle').checked, true);
   assert.equal($('audio-status').textContent, '오디오 재생 중');
-  const sourceLoads = players[0].sourceLoads;
   toggle(false);
+  assert.equal(players[1].destroyed, true, '스위치를 끄면 버퍼와 연결을 해제한다');
   const resumed = toggle(true);
-  assert.equal(players[0].sourceLoads, sourceLoads, '이미 읽은 방송 목록은 일시정지 후 다시 불러오지 않는다');
+  assert.equal(players.length, 3);
+  assert.deepEqual(audio.playGestures, [false, true, true]);
+  assert.equal(players[2].finishManifest(), true, '다시 켜면 새 방송 목록으로 시작한다');
   await resumed;
   assert.equal($('audio-status').textContent, '오디오 재생 중');
 });

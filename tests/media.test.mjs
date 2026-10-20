@@ -11,6 +11,8 @@ const channel = id => ({ id, name: `위원회 ${id}`, onAir: true,
   videoSources: [240, 480, 720, 1080].map(height => ({ height,
     url: `https://w-assembly.hscdn.com/assembly/${id}_${height}p/playlist.m3u8` })),
 });
+const adaptiveChannel = id => ({ ...channel(id),
+  videoDefaultUrl: `https://w-assembly.hscdn.com/assembly/${id}/master.m3u8` });
 
 function setup(t, { safari = false, delayed = false, mobile = false, restoredPip = false, savedEntries = [], initialQuality } = {}) {
   const nodes = {}, players = [], scripts = [], docEvents = {}, winEvents = {}, originals = new Map(), saved = new Map(savedEntries);
@@ -75,20 +77,22 @@ function setup(t, { safari = false, delayed = false, mobile = false, restoredPip
     setTimeout(fn) { const id = nextTimer++; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
     addEventListener(name, fn) { winEvents[name] = fn; } };
   const fetchRequests = [];
+  const mediaSession = { metadata: null, playbackState: 'none', actions: {},
+    setActionHandler(action, handler) { this.actions[action] = handler; } };
   const fetch = async url => { fetchRequests.push(url); throw Error('unexpected application fetch'); };
-  for (const [name, value] of Object.entries({ document, window, fetch, navigator: { userAgent: mobile ? (safari ? 'iPhone Version/18 Safari' : 'Android Chrome') : safari ? 'Version/18 Safari' : 'Chrome' } })) {
+  for (const [name, value] of Object.entries({ document, window, fetch, navigator: { mediaSession, audioSession: { type: 'auto' }, userAgent: mobile ? (safari ? 'iPhone Version/18 Safari' : 'Android Chrome') : safari ? 'Version/18 Safari' : 'Chrome' } })) {
     originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
   }
   t.after(() => { for (const [name, descriptor] of originals) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name]; });
   const controller = initMedia($);
   if (initialQuality) { $('video-quality').value = initialQuality; $('video-quality').onchange(); }
-  return { $, controller, players, document, window, scripts, Hls, docEvents, winEvents, saved, fetchRequests, timers };
+  return { $, controller, players, document, window, scripts, Hls, docEvents, winEvents, saved, fetchRequests, timers, mediaSession };
 }
 
-test('오디오↔영상 전환은 하나만 재생하고 240p 시작·자동 및 직접 화질을 제공한다', async t => {
+test('오디오↔영상 전환은 하나만 재생하고 국회 원본의 자동 및 직접 화질을 제공한다', async t => {
   const { $, controller, players } = setup(t);
-  controller.setSource(channel('19')); await settle();
+  controller.setSource(adaptiveChannel('19')); await settle();
   assert.equal($('video-toggle').checked, false);
   assert.equal($('video-options').hidden, true);
   $('audio-toggle').checked = true; await $('audio-toggle').onchange();
@@ -100,7 +104,7 @@ test('오디오↔영상 전환은 하나만 재생하고 240p 시작·자동 �
   assert.equal($('video-options').hidden, false);
   const videoPlayer = players.findLast(player => player.media === $('broadcast-video'));
   assert.equal(videoPlayer.options.startLevel, 0); assert.equal(videoPlayer.options.testBandwidth, false);
-  assert.match(videoPlayer.url, /\/api\/video.m3u8\?channel=19&_/);
+  assert.equal(videoPlayer.url, adaptiveChannel('19').videoDefaultUrl);
   assert.equal($('video-quality').value, 'auto');
   assert.equal(videoPlayer.loadLevel, -1, '초기 화질을 고정하지 않고 자동 상승을 허용한다');
   $('video-quality').value = '720'; await $('video-quality').onchange(); await settle();
@@ -108,8 +112,8 @@ test('오디오↔영상 전환은 하나만 재생하고 240p 시작·자동 �
   assert.match(players.at(-1).url, /19_720p/);
   $('fullscreen-quality').value = 'auto'; await $('fullscreen-quality').onchange(); await settle();
   const autoPlayer = players.at(-1);
-  assert.match(autoPlayer.url, /\/api\/video.m3u8\?channel=19&_/);
-  assert.equal(autoPlayer.options.startLevel, 0, '자동 화질로 돌아오면 240p부터 시작한다');
+  assert.equal(autoPlayer.url, adaptiveChannel('19').videoDefaultUrl);
+  assert.equal(autoPlayer.options.startLevel, 0, '국회 원본 목록의 첫 화질부터 시작한다');
   assert.equal(autoPlayer.loadLevel, -1);
   const connection = autoPlayer.url, playerCount = players.length;
   autoPlayer.listeners.level(null, { level: 3 });
@@ -131,7 +135,7 @@ test('오디오↔영상 전환은 하나만 재생하고 240p 시작·자동 �
 
 test('자동 상향 전환은 버퍼를 한 번 비우고 자동 화질을 유지한다', async t => {
   const { $, controller, players } = setup(t);
-  controller.setSource(channel('26')); await settle(); await startVideo($);
+  controller.setSource(adaptiveChannel('26')); await settle(); await startVideo($);
   const video = $('broadcast-video'), player = players.at(-1);
   const switches = level => player.listeners.switching(null, { level });
   switches(0); await settle();
@@ -154,7 +158,7 @@ test('자동 상향 전환은 버퍼를 한 번 비우고 자동 화질을 유�
 
 test('철회된 상향이나 일시정지·빈 버퍼에서는 추가로 버퍼를 비우지 않는다', async t => {
   const { $, controller, players } = setup(t);
-  controller.setSource(channel('26')); await settle(); await startVideo($);
+  controller.setSource(adaptiveChannel('26')); await settle(); await startVideo($);
   const video = $('broadcast-video'), player = players.at(-1);
   const switches = level => player.listeners.switching(null, { level });
   switches(0); switches(3); switches(0); await settle();
@@ -168,10 +172,10 @@ test('철회된 상향이나 일시정지·빈 버퍼에서는 추가로 버퍼�
 
 test('상향 예약 직후 채널이나 수동 화질을 바꾸면 이전 버퍼 작업을 취소한다', async t => {
   const { $, controller, players } = setup(t);
-  controller.setSource(channel('26')); await settle(); await startVideo($);
+  controller.setSource(adaptiveChannel('26')); await settle(); await startVideo($);
   const old = players.at(-1);
   old.listeners.switching(null, { level: 0 }); old.listeners.switching(null, { level: 3 });
-  controller.setSource(channel('25')); await settle(); await settle();
+  controller.setSource(adaptiveChannel('25')); await settle(); await settle();
   assert.equal(old.destroyed, true); assert.deepEqual(old.immediateSwitches, []);
   old.listeners.switching(null, { level: 3 });
   const current = players.at(-1);
@@ -221,14 +225,14 @@ test(`${safari ? 'Safari' : 'HLS.js'}: 영상도 오디오처럼 마지막 재�
 });
 }
 
-test('초기 채널이 비어 있어도 나중에 확인한 채널을 240p 자동 화질로 시작한다', async t => {
+test('초기 채널이 비어 있어도 나중에 확인한 국회 기본 영상 주소로 재생한다', async t => {
   const { $, controller, players } = setup(t);
   controller.setSource(null);
   const next = channel('19');
   next.videoDefaultUrl = next.videoSources.find(source => source.height === 720).url;
   controller.setSource(next); await settle(); await startVideo($);
   assert.equal($('video-quality').value, 'auto');
-  assert.match(players.at(-1).url, /\/api\/video.m3u8\?channel=19&_/);
+  assert.equal(players.at(-1).url, next.videoDefaultUrl);
   assert.equal(players.at(-1).options.startLevel, 0);
   assert.equal(players.at(-1).loadLevel, -1);
 });
@@ -383,23 +387,47 @@ test('영상 모드에서 채널 변경을 이어 재생하고 방송 종료 때
   controller.setSource(channel('19')); await settle(); await startVideo($);
   controller.setSource(channel('25')); await settle(); await settle();
   assert.equal($('broadcast-video').paused, false);
-  assert.ok(players.find(player => /\/api\/video.m3u8\?channel=25&_/.test(player.url)));
+  assert.ok(players.find(player => player.url === channel('25').videoDefaultUrl));
   await $('pip-toggle').onclick(); controller.setSource(null);
   assert.equal($('broadcast-video').paused, true); assert.equal(document.pictureInPictureElement, null);
   assert.equal($('media-panel').hidden, true); assert.equal($('video-toggle').disabled, true);
 });
 
-test('Safari는 기본 HLS로 재생하고 수동 화질과 자동 목록을 전환한다', async t => {
+test('Safari는 기본 HLS로 국회 기본 주소와 수동 화질 주소를 전환한다', async t => {
   const { $, controller, players } = setup(t, { safari: true });
   controller.setSource(channel('19')); await settle(); await startVideo($);
-  assert.equal(players.length, 0); assert.match($('broadcast-video').src, /\/api\/video.m3u8\?channel=19&_/);
+  assert.equal(players.length, 0); assert.equal($('broadcast-video').src, channel('19').videoDefaultUrl);
   $('video-quality').value = '1080'; await $('video-quality').onchange();
   assert.match($('broadcast-video').src, /19_1080p/); assert.equal($('broadcast-video').paused, false);
-  $('video-quality').value = 'auto'; await $('video-quality').onchange(); assert.match($('broadcast-video').src, /\/api\/video.m3u8\?channel=19&_/);
+  $('video-quality').value = 'auto'; await $('video-quality').onchange(); assert.equal($('broadcast-video').src, channel('19').videoDefaultUrl);
   controller.setSource(channel('25')); await settle(); await settle();
-  assert.match($('broadcast-video').src, /\/api\/video.m3u8\?channel=25&_/);
+  assert.equal($('broadcast-video').src, channel('25').videoDefaultUrl);
   assert.equal($('broadcast-video').paused, false, '기본 HLS를 사용하는 Safari도 채널 변경 후 재생한다');
 });
+
+for (const safari of [false, true]) {
+test(`${safari ? 'Safari' : 'HLS.js'}: 국회 원본의 쿼리를 보존하고 기본 주소가 없으면 원본 오디오 주소로 재생한다`, async t => {
+  const { $, controller, players, fetchRequests } = setup(t, { safari });
+  const next = channel('19');
+  next.videoDefaultUrl += '?token=original&part=1';
+  const manual = next.videoSources.find(source => source.height === 720);
+  manual.url += '?token=manual&part=2';
+  const currentUrl = () => safari ? $('broadcast-video').src : players.at(-1).url;
+  controller.setSource(next); await startVideo($); await settle();
+  assert.equal(currentUrl(), next.videoDefaultUrl, '기본 원본 주소에 임의 쿼리를 덧붙이지 않는다');
+  if (!safari) assert.equal(players.at(-1).levels.length, 1, '단일 화질 원본을 별도 목록으로 합치지 않는다');
+  $('video-quality').value = '720'; await $('video-quality').onchange();
+  assert.equal(currentUrl(), manual.url);
+  $('video-quality').value = 'auto'; await $('video-quality').onchange();
+  assert.equal(currentUrl(), next.videoDefaultUrl);
+  const fallback = channel('25');
+  delete fallback.videoDefaultUrl; fallback.videoSources = [];
+  controller.setSource(fallback); await settle();
+  assert.equal(currentUrl(), fallback.audioUrl);
+  assert.equal($('broadcast-video').paused, false);
+  assert.deepEqual(fetchRequests, [], '애플리케이션 서버에 영상 목록을 요청하지 않는다');
+});
+}
 
 test('라이브러리 준비 중 채널·모드를 바꿔도 오래된 영상 재생이 오디오를 끊지 않는다', async t => {
   const { $, controller, scripts, Hls, window } = setup(t, { delayed: true });
@@ -663,4 +691,151 @@ test('전체화면 종료 뒤 늦게 완료된 방향 고정 요청도 해제한
   await $('fullscreen-exit').onclick(); finish(); await entering;
   assert.equal(locked, false);
   assert.equal($('media-shell').classList.contains('landscape-fallback'), false);
+});
+
+for (const safari of [false, true]) {
+test(`${safari ? 'Safari' : 'HLS.js'}: 오디오 끄기·채널 갱신·재시작에서 이전 주소와 버퍼를 남기지 않는다`, async t => {
+  const { $, controller, players, mediaSession } = setup(t, { safari });
+  controller.setSource(channel('19')); await settle();
+  assert.equal(players.length, 0, '꺼진 미디어는 연결하지 않는다');
+  for (let cycle = 0; cycle < 5; cycle++) {
+    const before = $('broadcast-audio').playCalls;
+    $('audio-toggle').checked = true; const playing = $('audio-toggle').onchange();
+    assert.equal($('broadcast-audio').playCalls, before + 1, '사용자 입력 안에서 재생한다');
+    await playing;
+    assert.equal($('broadcast-audio').buffered.length, 1);
+    controller.setSource(channel('19')); await settle();
+    assert.equal(mediaSession.playbackState, 'playing', '동일 채널 갱신은 재생 상태를 바꾸지 않는다');
+    $('audio-toggle').checked = false; $('audio-toggle').onchange();
+    assert.equal($('broadcast-audio').src, '');
+    assert.equal($('broadcast-audio').buffered.length, 0);
+    assert.equal($('broadcast-audio').paused, true);
+    assert.equal(mediaSession.playbackState, 'none');
+    assert.equal(mediaSession.metadata, null);
+    assert.equal(navigator.audioSession.type, 'auto');
+    assert.ok(players.every(player => player.destroyed), '사용한 플레이어를 모두 해제한다');
+    const count = players.length;
+    controller.setSource(channel('19'));
+    controller.setSource(channel('25'));
+    controller.setSource(channel('19')); await settle();
+    assert.equal(players.length, count, '끄고 나서 채널이 갱신되어도 재생기를 만들지 않는다');
+  }
+});
+
+test(`${safari ? 'Safari' : 'HLS.js'}: 페이지를 떠나면 오디오 연결과 버퍼를 해제하고 복원 후에도 꺼 둔다`, async t => {
+  const { $, controller, players, winEvents } = setup(t, { safari });
+  controller.setSource(channel('19'));
+  $('audio-toggle').checked = true; await $('audio-toggle').onchange();
+  winEvents.pagehide(); await settle();
+  assert.equal($('broadcast-audio').src, '');
+  assert.equal($('broadcast-audio').buffered.length, 0);
+  assert.ok(players.every(player => player.destroyed));
+  const count = players.length;
+  winEvents.pageshow({ persisted: true });
+  controller.setSource(channel('19')); await settle();
+  assert.equal(players.length, count);
+  assert.equal($('audio-toggle').checked, false);
+});
+
+test(`${safari ? 'Safari' : 'HLS.js'}: 영상 끄기는 자막 DOM·타이머·PIP·전체화면·버퍼를 정리한다`, async t => {
+  const { $, controller, players, document, timers, mediaSession } = setup(t, { safari });
+  controller.setSource(channel('19')); await startVideo($);
+  controller.setCaptions([{ id: 1, text: '현재 발언' }]);
+  await $('fullscreen-toggle').onclick();
+  $('caption-layout').value = 'split'; $('caption-layout').onchange();
+  assert.equal($('fullscreen-history').children.length, 1);
+  assert.equal(timers.size, 1);
+  $('video-toggle').checked = false; $('video-toggle').onchange(); await settle();
+  assert.equal($('fullscreen-history').children.length, 0);
+  assert.equal(timers.size, 0);
+  assert.equal(document.fullscreenElement, null);
+  assert.equal($('broadcast-video').src, '');
+  assert.equal($('broadcast-video').buffered.length, 0);
+  assert.equal(mediaSession.playbackState, 'none');
+  assert.ok(players.every(player => player.destroyed));
+  const count = players.length;
+  controller.setSource(channel('25')); await settle();
+  assert.equal(players.length, count, '채널 변경이 꺼 둔 영상을 준비하지 않는다');
+  await startVideo($); await $('pip-toggle').onclick();
+  assert.equal(document.pictureInPictureElement, $('broadcast-video'));
+  controller.stop(); await settle();
+  assert.equal(document.pictureInPictureElement, null);
+  assert.equal($('broadcast-video').src, '');
+  assert.ok(players.every(player => player.destroyed));
+});
+
+for (const kind of ['audio', 'video']) {
+for (const event of ['error', 'ended', ...(safari ? [] : ['fatal'])]) {
+test(`${safari ? 'Safari' : 'HLS.js'}: ${kind} ${event} 후 재생기·버퍼를 해제하고 재시작한다`, async t => {
+  const { $, controller, players } = setup(t, { safari });
+  controller.setSource(channel('19'));
+  if (kind === 'video') await startVideo($);
+  else { $('audio-toggle').checked = true; await $('audio-toggle').onchange(); }
+  await settle();
+  const media = $(`broadcast-${kind}`);
+  const player = players.findLast(player => player.media === media);
+  if (event === 'fatal') player.listeners.error(null, { fatal: true, type: 'networkError' });
+  else { if (event === 'error') media.error = { code: 2 }; media.emit(event); }
+  await settle();
+  assert.equal(media.paused, true);
+  assert.equal(media.src, '');
+  assert.equal(media.buffered.length, 0);
+  assert.equal($(`${kind}-toggle`).checked, false);
+  if (player) {
+    assert.equal(player.destroyed, true);
+    // A queued callback from the old instance must not affect its replacement.
+    player.listeners.error(null, { fatal: true, type: 'networkError' });
+  }
+  const count = players.length;
+  controller.setSource(channel('19')); await settle();
+  assert.equal(players.length, count);
+  media.error = null;
+  if (kind === 'video') await startVideo($);
+  else { $('audio-toggle').checked = true; await $('audio-toggle').onchange(); }
+  assert.equal(media.paused, false);
+  if (player) {
+    player.listeners.error(null, { fatal: true, type: 'networkError' });
+    assert.equal(media.paused, false);
+  }
+});
+}
+}
+}
+
+for (const rejected of [false, true]) {
+test(`끄고 난 뒤 ${rejected ? '거절' : '완료'}된 전체화면 요청은 확대 보기와 타이머를 남기지 않는다`, async t => {
+  const { $, controller, document, timers } = setup(t);
+  controller.setSource(channel('19')); await startVideo($);
+  let finish;
+  $('media-shell').requestFullscreen = () => new Promise((resolve, reject) => {
+    finish = () => {
+      if (rejected) reject(Error('unavailable'));
+      else { document.fullscreenElement = $('media-shell'); resolve(); }
+    };
+  });
+  const entering = $('fullscreen-toggle').onclick();
+  controller.stop(); finish(); await entering;
+  assert.equal(document.fullscreenElement, null);
+  assert.equal(document.body.classList.contains('media-expanded'), false);
+  assert.equal($('media-shell').classList.contains('is-expanded'), false);
+  assert.equal(timers.size, 0);
+});
+}
+
+test('라이브러리 로딩 중 끄면 완료 후에도 플레이어나 재생을 시작하지 않는다', async t => {
+  // Use an isolated loader so this test controls the shared script's completion.
+  const { initAudio } = await import(`../audio.mjs?pending=${Date.now()}`);
+  const { $, window, scripts, Hls } = setup(t, { delayed: true });
+  $('audio-url').value = channel('19').audioUrl;
+  const controller = initAudio($);
+  const starting = controller.play();
+  controller.pause();
+  window.Hls = Hls; scripts.at(-1).onload();
+  await starting; await settle();
+  assert.equal($('broadcast-audio').playCalls, 0);
+  assert.equal($('broadcast-audio').src, '');
+  assert.equal($('audio-toggle').checked, false);
+  assert.equal($('audio-toggle').disabled, false, '취소된 준비 작업 뒤에도 다시 켤 수 있다');
+  await controller.play();
+  assert.equal($('broadcast-audio').playCalls, 1);
 });
