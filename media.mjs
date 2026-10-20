@@ -264,13 +264,14 @@ export function initMedia($, { onLayout = () => {}, now = () => performance.now(
               if (current !== player) return;
               populateQuality(channel.videoSources?.map(source => source.height) || current.levels.map(level => level.height));
               if (autoQuality) {
-                autoQuality = createAutoQuality({ ...channel, videoDefaultUrl: url, videoSources: channel.videoSources.filter(source => current.levels.some(level => level.height === source.height)) }, now);
+                const matchedSources = channel.videoSources.filter(source => current.levels.some(level => level.height === source.height));
+                autoQuality = createAutoQuality({ ...channel, videoDefaultUrl: url, videoSources: matchedSources.length ? matchedSources : channel.videoSources }, now);
               }
               if (autoQuality || quality !== 'auto') current.loadLevel = Math.max(0, current.levels.findIndex(level => level.height === autoQuality?.height));
             });
             current.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
               if (current !== player) return;
-              const height = current.levels[data.level]?.height;
+              const height = current.levels[data.level]?.height || (quality === 'auto' ? autoQuality?.height : Number(quality));
               showQuality(height);
               if (autoQuality && height === autoQuality.height) {
                 qualityNote = `${nextQualityStart || `자동 ${height}p`} · ${autoQuality.reason}`;

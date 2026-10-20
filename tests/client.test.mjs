@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일시정지·따라가기를 처리한다', async t => {
+test('ON AIR 채널은 wss를 먼저 연결해 버퍼링하고 /api/captions와 합쳐 화면에 표시한다', async t => {
   const frames = [], nodes = {}, requests = [], streams = [], documentHandlers = new Map(), windowHandlers = new Map(), timers = new Map();
   const layoutWrites = [];
   let layoutReads = 0;
@@ -59,17 +59,29 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
     setTimeout(fn) { const id = nextTimer++; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
     localStorage: { getItem(key) { return saved.get(key) ?? null; }, setItem(key, value) { saved.set(key, value); } } };
   const source = 'wss://example.test', audioUrl = 'https://broadcast.test/live.m3u8';
-  let noOnAir = false, missingCaptionSource = false;
-  const caption = (id, text, revision) => ({ id, key: `segment-${id}`, day: '2026-10-14', text, revision, final: false,
+  let noOnAir = false, missingCaptionSource = false, wsOpenedBeforeCaptions = false, bufferedSent = false;
+  const caption = (id, text) => ({ id, k: `${id * 100}:${id}`, text, final: false,
     at: `2026-10-14T08:00:0${id}Z` });
+  const wsFrame = (segment, text, final = false, extra = {}) => ({
+    segment, 'segment-offset': segment * 100, transcript: text, final, ...extra,
+  });
   const originals = new Map();
   const globals = { document, window, navigator: { userAgent: 'Version/18 Safari' },
     requestAnimationFrame(fn) { frames.push(fn); return frames.length; },
-    EventSource: class {
-      constructor(url) { this.url = url; this.listeners = {}; streams.push(this); }
-      addEventListener(name, fn) { this.listeners[name] = fn; }
+    WebSocket: class {
+      constructor(url, protocol) {
+        this.url = url;
+        this.protocol = protocol;
+        streams.push(this);
+      }
       close() { this.closed = true; }
-      emit(name, item) { this.listeners[name]?.({ data: JSON.stringify(item) }); }
+      emit(name, item) {
+        if (name === 'caption') {
+          const payload = item?.caption ? wsFrame(item.caption.id, item.caption.text, item.caption.final, { at: item.caption.at }) :
+            item?.record ? { record: item.record } : item;
+          this.onmessage?.({ data: typeof payload === 'string' ? payload : JSON.stringify(payload) });
+        }
+      }
     },
     async fetch(url) {
       requests.push(url);
@@ -84,9 +96,18 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
           source: missingCaptionSource ? null : source, audioUrl, collector: { state: 'connected' } },
         { id: '33', name: '복지위', subject: '', statusText: '생중계 없음', onAir: false }] }) };
       const after = new URL(url, 'http://test').searchParams.get('after');
+      if (after === '0' && streams.length === 1) {
+        wsOpenedBeforeCaptions = true;
+        if (!bufferedSent) {
+          bufferedSent = true;
+          streams[0].emit('caption', wsFrame(2, '불러오는 동안 생긴 문장', false, { at: '2026-10-14T08:00:02Z' }));
+        }
+      }
       return { ok: true, json: async () => after === '0' ?
-        { day: '2026-10-14', rows: [caption(1, '저장된 첫 문장', 1)], cursor: 1, hasMore: true, next: 1 } :
-        { day: '2026-10-14', rows: [caption(2, '불러오는 동안 생긴 문장', 3)], cursor: 3, hasMore: false, next: 2 } };
+        { day: '2026-10-14', rows: [caption(1, '저장된 첫 문장')], cursor: 1, hasMore: true, next: 1 } :
+        after === '1' ?
+        { day: '2026-10-14', rows: [caption(2, '서버 스냅샷의 이전 초안')], cursor: 3, hasMore: false, next: 2 } :
+        { day: '2026-10-14', rows: [], cursor: 3, hasMore: false, next: Number(after) } };
     },
   };
   for (const [name, value] of Object.entries(globals)) {
@@ -100,12 +121,14 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const flush = () => { let guard = 0; while (frames.length && guard++ < 100) frames.shift()(); };
   await import(`../client.mjs?test=${Date.now()}`); await settle(); await settle(); await settle(); flush();
-  assert.ok(streams[0].url.endsWith('since=1'), 'Uses first snapshot watermark, not later page cursor');
-  assert.ok(streams[0].url.includes('channel=25'));
-  assert.ok(streams[0].url.includes('date=2026-10-14'));
+  assert.equal(wsOpenedBeforeCaptions, true, 'captions 요청 전에 wss 연결을 먼저 시작한다');
+  assert.equal(streams[0].url, source);
+  assert.equal(streams[0].protocol, 'echo-protocol');
+  assert.ok(requests.every(url => !url.startsWith('/api/events')), '실시간 자막은 /api/events 대신 wss에서 직접 읽는다');
   assert.equal(nodes.channel.value, '25');
   assert.equal(saved.get('assembly-caption-channel'), '25');
   assert.equal(nodes.rows.children.length, 2);
+  assert.equal(nodes.rows.children[1].textContent, '불러오는 동안 생긴 문장', 'captions 수신 중 버퍼링된 wss 메시지를 세그먼트 키로 병합한다');
   assert.equal(nodes.connect.checked, true);
   const readsBeforeResize = layoutReads, writesBeforeResize = layoutWrites.length, scrollsBeforeResize = scroller.scrollCalls;
   for (let i = 0; i < 10; i++) windowHandlers.get('resize')();
@@ -140,10 +163,17 @@ test('ON AIR 채널을 선택하고 저장 기록 이후 누락분·수정·일�
   assert.deepEqual(nodes.rows.children[0].children, [], 'Caption has no timestamp or raw-message details');
   streams[0].emit('caption', { cursor: 4, caption: { ...caption(3, '5분 뒤 새 문장', 4), at: '2026-10-14T08:05:02Z' } }); flush();
   assert.deepEqual(nodes.rows.children.map(child => child.textContent), ['초안을 교체한 문장', '불러오는 동안 생긴 문장', '─── 17:05 ───', '5분 뒤 새 문장']);
+  nodes.follow.checked = false; scroller.scrollTop = 320;
+  const replaceBeforePause = nodes.rows.replaceCalls, firstChildBeforePause = nodes.rows.children[0];
   nodes.connect.checked = false; nodes.connect.onchange(); assert.equal(streams[0].closed, true); assert.equal(nodes.connect.checked, false);
   assert.equal(document.body.classList.contains('chrome-hidden'), false, '자막을 멈추면 도구를 계속 표시한다');
   assert.equal(timers.size, 0, '자막을 멈추면 유휴 숨김 타이머를 해제한다');
   nodes.connect.checked = true; nodes.connect.onchange(); await settle(); flush(); assert.equal(streams.length, 2);
+  assert.equal(nodes.rows.replaceCalls, replaceBeforePause, '일시정지 후 재개해도 전체 자막 목록을 새로고침하지 않는다');
+  assert.equal(nodes.rows.children[0], firstChildBeforePause, '기존 자막 DOM 노드를 그대로 유지한다');
+  assert.equal(scroller.scrollTop, 320, '새 자막 따라가기가 꺼져 있으면 재개 시 스크롤 위치를 유지한다');
+  assert.ok(requests.at(-1).includes('after=2'), '재개 시 마지막으로 받은 서버 ID 이후만 증분 조회한다');
+  nodes.follow.checked = true;
   nodes.date.value = '2026-10-13'; nodes.date.onchange(); await settle(); await settle(); flush();
   assert.equal(streams[1].closed, true); assert.equal(nodes.connect.disabled, true);
   assert.ok(requests.some(url => url.includes('date=2026-10-13')));
