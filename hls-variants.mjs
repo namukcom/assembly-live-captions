@@ -24,6 +24,7 @@ export function originalVariantLoader(Hls, sources, fetchImpl = fetch) {
     load(context, config, callbacks) {
       if (context.type !== 'manifest') return super.load(context, config, callbacks);
       return super.load(context, config, { ...callbacks, onSuccess: async (response, stats, loadedContext, details) => {
+        this.variantAbort?.abort();
         const controller = new AbortController(); this.variantAbort = controller;
         const timer = setTimeout(() => controller.abort(), 5000);
         let combined = response;

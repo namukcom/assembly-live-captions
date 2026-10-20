@@ -14,74 +14,45 @@ function setup() {
   } };
 }
 
-test('자동은 480p에서 시작하고 충분한 측정·대기 후 720p·1080p로 한 단계씩 상승한다', () => {
+test('자동은 1080p에서 시작하고 안정적인 동안 1080p를 유지하며 2160p 등 허용 범위 밖의 화질은 제외한다', () => {
   const { auto, step } = setup();
-  assert.equal(auto.height, 480);
-  assert.equal(step(), null); assert.equal(step(), null); assert.equal(step(), null);
-  assert.equal(step(), 720);
-  auto.resume();
-  assert.equal(step(), null); assert.equal(step(), null); assert.equal(step(), null);
-  assert.equal(step(), 1080);
-  for (let index = 0; index < 20; index++) assert.equal(step(), null);
-  assert.equal(auto.height, 1080, '2160p 등 허용 범위 밖의 화질로는 올리지 않는다');
-});
-
-for (const [reason, sample] of [
-  ['느린 다운로드', { bandwidth: 2000000 }], ['버퍼 부족', { buffer: 1.5 }],
-  ['데이터 절약', { saveData: true }], ['재생 정체', { currentTime: 0 }],
-]) {
-  test(`${reason}에서는 화질을 올리지 않는다`, () => {
-    const { auto, step } = setup();
-    for (let index = 0; index < 20; index++) assert.equal(step(sample), null);
-    assert.equal(auto.height, 480);
-  });
-}
-
-test('속도 측정이 없는 기본 HLS에서는 더 긴 안정 구간을 확인한 후 상승한다', () => {
-  const { auto, step } = setup();
-  for (let index = 0; index < 6; index++) assert.equal(step({ bandwidth: NaN }), null);
-  assert.equal(step({ bandwidth: NaN }), 720);
-  assert.equal(auto.height, 720);
-});
-
-for (const [reason, sample] of [
-  ['버퍼 소진', { buffer: 0.3 }], ['대역폭 하락', { bandwidth: 1000000 }],
-  ['프레임 드롭', { droppedFrames: 50 }],
-]) {
-  test(`${reason} 시 하향하고 바로 재상승하지 않는다`, () => {
-    const { auto, step } = setup();
-    for (let index = 0; index < 4; index++) step();
-    assert.equal(auto.height, 720);
-    step();
-    if (reason !== '버퍼 소진') assert.equal(step(sample), null, '한 번의 이상 측정으로 하향하지 않는다');
-    assert.equal(step(reason === '프레임 드롭' ? { droppedFrames: 100 } : sample), 480);
-    for (let index = 0; index < 11; index++) assert.equal(step(), null);
-    assert.equal(auto.height, 480);
-    assert.equal(step(), 720, '하향 후 최소 60초가 지나면 다시 시도한다');
-  });
-}
-
-test('480p에서 버퍼링을 겪어도 안정화 뒤에는 다시 상승할 수 있다', () => {
-  const { auto, step } = setup();
-  auto.stall(); assert.equal(step(), null);
-  for (let index = 0; index < 10; index++) assert.equal(step(), null);
-  assert.equal(step(), 720);
-});
-
-test('순간적인 속도 하락과 이미 회복된 버퍼링은 화질 초기화를 일으키지 않는다', () => {
-  const { auto, step } = setup();
-  for (let index = 0; index < 8; index++) step();
   assert.equal(auto.height, 1080);
-  assert.equal(step({ bandwidth: 1000000 }), null);
-  assert.equal(step(), null);
+  assert.equal(auto.reason, '1080p에서 시작');
+  for (let index = 0; index < 20; index++) assert.equal(step(), null);
+  assert.equal(auto.height, 1080);
+});
+
+for (const [reason, firstSample, secondSample = firstSample] of [
+  ['버퍼 소진', { buffer: 0.3 }],
+  ['대역폭 하락', { bandwidth: 1000000 }],
+  ['프레임 드롭', { droppedFrames: 50 }, { droppedFrames: 100 }],
+  ['데이터 절약', { saveData: true }],
+  ['재생 정체', { currentTime: 0 }],
+]) {
+  test(`${reason} 감지 즉시 대기 없이 한 단계씩 하향하고 480p 아래로는 내려가지 않는다`, () => {
+    const { auto, step } = setup();
+    assert.equal(auto.height, 1080);
+    assert.equal(step(firstSample), 720);
+    assert.equal(auto.height, 720);
+    assert.equal(step(secondSample), 480);
+    assert.equal(auto.height, 480);
+    for (let index = 0; index < 10; index++) assert.equal(step(secondSample), null);
+    assert.equal(auto.height, 480);
+  });
+}
+
+test('이미 회복된 버퍼링은 하향하지 않고 버퍼가 부족한 정체는 즉시 하향한다', () => {
+  const { auto, step } = setup();
   auto.stall();
   assert.equal(step({ buffer: 8 }), null);
   assert.equal(auto.height, 1080);
+  auto.stall();
+  assert.equal(step({ buffer: 1.5 }), 720);
+  assert.equal(auto.height, 720);
 });
 
 test('상위 화질 연결 실패는 한 단계씩 복귀하며 480p 아래로 자동 하향하지 않는다', () => {
-  const { auto, step } = setup();
-  for (let index = 0; index < 8; index++) step();
+  const { auto } = setup();
   assert.equal(auto.height, 1080);
   assert.equal(auto.fallback(), 720);
   assert.equal(auto.fallback(), 480);

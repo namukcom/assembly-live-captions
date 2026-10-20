@@ -9,7 +9,7 @@ let captions = new Map(), records = new Map(), articles = new Map(), rawArticles
 let orderedCaptions = null, finalCaptions = null, orderedRecords = null, renderedRows = null, renderedCount = 0, renderedSlot = null, latestArticle = null;
 const pendingCaptionUpdates = new Set(), pendingRecordUpdates = new Set(), layoutHeights = new Map();
 let channels = [], channelId = '', preferredChannelId = '', viewDay = '';
-let channelOptionsKey = '';
+let channelOptionsKey = '', refreshingChannels = null, refreshDeferred = false;
 let chromeTimer = null;
 let keyboardNavigation = false;
 
@@ -104,9 +104,10 @@ function visibleRows() {
 }
 
 function render() {
+  if (renderFrame !== null) { if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(renderFrame); renderFrame = null; }
   const query = $('search').value.trim().toLowerCase();
   const sourceRows = visibleRows();
-  const rows = query ? sourceRows.filter(row => row.text.toLowerCase().includes(query)) : sourceRows;
+  const rows = query ? sourceRows.filter(row => (row._search ??= row.text.toLowerCase()).includes(query)) : sourceRows;
   const samePrefix = rows === renderedRows || (query && rows.length >= renderedCount &&
     rows.every((row, index) => index >= renderedCount || row === renderedRows?.[index]));
   const rebuild = dirtyStructure || !samePrefix || rows.length < renderedCount;
@@ -125,7 +126,7 @@ function render() {
     const nodes = $('mode').value === 'raw' ? rawArticles : articles;
     for (let index = rebuild ? 0 : renderedCount; index < rows.length; index++) {
       const row = rows[index];
-      const slot = query ? null : seoulSlot(row.at);
+      const slot = query ? null : (row._slot ??= seoulSlot(row.at));
       if (slot && prevSlot && slot !== prevSlot) {
         const divider = document.createElement('p');
         divider.className = 'time-divider';
@@ -166,14 +167,15 @@ function render() {
 
 function scheduleRender() {
   if (renderFrame !== null) return;
-  renderFrame = requestAnimationFrame(() => { renderFrame = null; render(); });
+  const frame = requestAnimationFrame(() => { if (renderFrame === frame) { renderFrame = null; render(); } });
+  renderFrame = frame;
 }
 
 function applyCaption(row) {
   if (!row || (viewDay && row.day !== viewDay)) return;
   const old = captions.get(row.id);
   if (!old || old.revision <= row.revision) {
-    row._time = old?._time ?? Date.parse(row.at);
+    row._time = old?._time ?? Date.parse(row.at); row._search = row.text.toLowerCase();
     if (old) {
       const membershipChanged = (old.final !== false) !== (row.final !== false);
       Object.assign(old, row);
@@ -183,7 +185,7 @@ function applyCaption(row) {
       orderedCaptions = appendOrdered(orderedCaptions, row);
       if (row.final !== false) finalCaptions = appendOrdered(finalCaptions, row);
     }
-    pendingCaptionUpdates.add(row.id);
+    if (articles.has(row.id)) pendingCaptionUpdates.add(row.id);
   }
 }
 
@@ -195,7 +197,8 @@ function appendOrdered(rows, row) {
 function applyRecord(row) {
   if (!row || (viewDay && row.day !== viewDay)) return;
   const old = records.get(row.id);
-  row._time = Date.parse(row.at);
+  if (!old && !row.text.trim()) return;
+  row._time = Date.parse(row.at); row._search = row.text.toLowerCase(); row._slot = seoulSlot(row.at);
   if (old) {
     const membershipChanged = Boolean(old.text.trim()) !== Boolean(row.text.trim());
     const timeChanged = old._time !== row._time;
@@ -205,7 +208,7 @@ function applyRecord(row) {
     records.set(row.id, row);
     if (row.text.trim()) orderedRecords = appendOrdered(orderedRecords, row);
   }
-  pendingRecordUpdates.add(row.id);
+  if (rawArticles.has(row.id)) pendingRecordUpdates.add(row.id);
 }
 
 async function getJson(url, options) {
@@ -310,46 +313,54 @@ function activateChannel(id) {
 }
 
 async function refreshChannels(manual = false) {
+  if (!manual && refreshingChannels) return refreshingChannels;
   if (manual) $('refresh-channels').disabled = true;
-  try {
-    const data = await getJson(manual ? '/api/channels?refresh=1' : '/api/channels');
-    const wasOnAir = isLiveChannel(selectedChannel());
-    const previousCaptionReady = canReceiveCaptions(selectedChannel());
-    channels = [...data.channels].sort((left, right) =>
-      Number(left.statusText?.trim() === '생중계 없음') - Number(right.statusText?.trim() === '생중계 없음'));
-    const playable = channels.filter(isLiveChannel);
-    const wantedId = channelId || preferredChannelId;
-    const nextId = channels.find(channel => channel.id === wantedId)?.id || playable[0]?.id || channels[0]?.id || '';
-    renderChannelOptions();
-    const changed = nextId !== channelId;
-    if (changed || !selectedChannel()) activateChannel(nextId);
-    else {
-      const channel = selectedChannel();
-      $('channel').value = channelId;
-      $('source-url').value = channel.source || '';
-      const nextAudio = isPlayableChannel(channel) ? channel.audioUrl : '';
-      $('audio-url').value = nextAudio;
-      mediaController?.setSource(channel);
-      collectorState = channel.collector?.state || collectorState; updateStatus();
-      let reload = previousCaptionReady !== canReceiveCaptions(channel);
-      if (data.today && data.today !== config.today) {
-        const followedToday = !$('date').value || $('date').value === config.today;
-        config.today = data.today; $('date').max = data.today;
-        if (followedToday) { $('date').value = data.today; reload = true; }
+  const task = (async () => {
+    try {
+      const data = await getJson(manual ? '/api/channels?refresh=1' : '/api/channels');
+      const wasOnAir = isLiveChannel(selectedChannel());
+      const previousCaptionReady = canReceiveCaptions(selectedChannel());
+      channels = [...data.channels].sort((left, right) =>
+        Number(left.statusText?.trim() === '생중계 없음') - Number(right.statusText?.trim() === '생중계 없음'));
+      const playable = channels.filter(isLiveChannel);
+      const wantedId = channelId || preferredChannelId;
+      const nextId = channels.find(channel => channel.id === wantedId)?.id || playable[0]?.id || channels[0]?.id || '';
+      renderChannelOptions();
+      const changed = nextId !== channelId;
+      if (changed || !selectedChannel()) activateChannel(nextId);
+      else {
+        const channel = selectedChannel();
+        $('channel').value = channelId;
+        $('source-url').value = channel.source || '';
+        const nextAudio = isPlayableChannel(channel) ? channel.audioUrl : '';
+        $('audio-url').value = nextAudio;
+        mediaController?.setSource(channel);
+        collectorState = channel.collector?.state || collectorState; updateStatus();
+        let reload = previousCaptionReady !== canReceiveCaptions(channel);
+        if (data.today && data.today !== config.today) {
+          const followedToday = !$('date').value || $('date').value === config.today;
+          config.today = data.today; $('date').max = data.today;
+          if (followedToday) { $('date').value = data.today; reload = true; }
+        }
+        if (!wasOnAir && isLiveChannel(channel) && $('date').value === config.today) {
+          wantsLive = true; reload = true;
+        }
+        if (reload) loadView();
       }
-      if (!wasOnAir && isLiveChannel(channel) && $('date').value === config.today) {
-        wantsLive = true; reload = true;
-      }
-      if (reload) loadView();
+      const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString('ko-KR') : '방금';
+      const onAirCount = playable.length;
+      const scheduledCount = channels.filter(channel => channel.statusText?.trim() !== '생중계 없음').length;
+      $('channel-refresh-status').textContent = data.lastError ? `목록 갱신 실패 · ${data.lastError}` :
+        onAirCount ? `채널 목록 ${refreshed} 갱신 · ON AIR ${onAirCount}개` : `현재 ON AIR 없음 · 오늘 편성 채널 ${scheduledCount}개 · ${refreshed} 갱신`;
+    } catch {
+      $('channel-refresh-status').textContent = '채널 목록 갱신 실패 · 다시 시도하세요.';
+    } finally {
+      if (refreshingChannels === task) refreshingChannels = null;
+      if (manual) $('refresh-channels').disabled = false;
     }
-    const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString('ko-KR') : '방금';
-    const onAirCount = channels.filter(isLiveChannel).length;
-    const scheduledCount = channels.filter(channel => channel.statusText?.trim() !== '생중계 없음').length;
-    $('channel-refresh-status').textContent = data.lastError ? `목록 갱신 실패 · ${data.lastError}` :
-      onAirCount ? `채널 목록 ${refreshed} 갱신 · ON AIR ${onAirCount}개` : `현재 ON AIR 없음 · 오늘 편성 채널 ${scheduledCount}개 · ${refreshed} 갱신`;
-  } catch {
-    $('channel-refresh-status').textContent = '채널 목록 갱신 실패 · 다시 시도하세요.';
-  } finally { if (manual) $('refresh-channels').disabled = false; }
+  })();
+  refreshingChannels = task;
+  return task;
 }
 
 async function start() {
@@ -359,7 +370,10 @@ async function start() {
     try { preferredChannelId = window.localStorage?.getItem(channelStorageKey) || ''; } catch {}
     mediaController = initMedia($, { onLayout: syncLayout });
     await refreshChannels();
-    window.setInterval?.(() => refreshChannels(), Math.max(10000, config.channelRefreshMs || 30000));
+    window.setInterval?.(() => {
+      if (document.visibilityState === 'hidden') { refreshDeferred = true; return; }
+      refreshChannels();
+    }, Math.max(10000, config.channelRefreshMs || 30000));
   } catch {
     wantsLive = false; controlState('서버 주소로 접속해 주세요. 연결하려면 자막 재생 스위치를 켜세요.');
   }
@@ -446,8 +460,13 @@ for (const eventName of ['pointerdown', 'pointermove', 'touchstart', 'touchmove'
   }, { passive: true });
 }
 $('source-settings').addEventListener('toggle', () => $('source-settings').open ? keepChromeVisible() : revealChrome());
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepScreen(); revealChrome(); } });
-window.addEventListener('pagehide', () => { keepChromeVisible(); wakeSentinel?.release().catch(() => {}); stream?.close(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (refreshDeferred) { refreshDeferred = false; refreshChannels(); }
+    keepScreen(); revealChrome();
+  }
+});
+window.addEventListener('pagehide', () => { keepChromeVisible(); wakeSentinel?.release().catch(() => {}); stream?.close(); stream = null; });
 window.addEventListener('pageshow', event => { if (event.persisted) { if (wantsLive) loadView(); keepScreen(); revealChrome(); } });
 window.addEventListener('resize', syncLayout, { passive: true });
 window.visualViewport?.addEventListener('resize', syncLayout, { passive: true });
