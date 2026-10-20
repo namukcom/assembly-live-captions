@@ -15,19 +15,21 @@ class FakeSocket extends EventTarget {
 test('echo-protocol을 사용해 저장하고 연결 종료 후 재연결한다', async () => {
   FakeSocket.instances = [];
   const store = new CaptionStore(':memory:');
-  const events = [];
+  const events = [], statuses = [];
   const collector = new CaptionCollector({ source: 'wss://example.test', store,
-    WebSocketClass: FakeSocket, reconnectBaseMs: 5, onEvent: event => events.push(event) });
+    WebSocketClass: FakeSocket, reconnectBaseMs: 5, onEvent: event => events.push(event), onStatus: status => statuses.push(status) });
   try {
     collector.start();
     const first = FakeSocket.instances[0];
     assert.equal(first.protocol, 'echo-protocol'); first.open();
     first.message('{"segment":1,"transcript":"저장한 자막","final":true}');
-    assert.equal(store.cursor(), 1); assert.equal(events[0].caption.text, '저장한 자막');
+    first.message('{"segment":1,"transcript":"저장한 자막 수정","final":true}');
+    assert.deepEqual(statuses, [{ state: 'connecting' }, { state: 'connected' }], '메시지 수신마다 중복 상태를 알리지 않는다');
+    assert.equal(store.cursor(), 2); assert.equal(events[0].caption.text, '저장한 자막');
     first.close(); assert.equal(collector.state.state, 'reconnecting');
     await delay(20); assert.equal(FakeSocket.instances.length, 2);
     first.message('{"segment":2,"transcript":"오래된 연결의 메시지"}');
-    assert.equal(store.cursor(), 1);
+    assert.equal(store.cursor(), 2);
     collector.stop(); await delay(20); assert.equal(FakeSocket.instances.length, 2);
   } finally { collector.stop(); store.close(); }
 });

@@ -145,7 +145,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
   const sendStatus = (channelId, value) => {
     let payload = null;
     for (const sub of subscribers) {
-      if (sub.channelId === channelId) writeEvent(sub.response, payload ??= formatEvent('status', value));
+      if (sub.channelId === channelId) writeEvent(sub.response, payload ??= formatEvent('status', { state: value.state }));
     }
   };
   const collector = liveListUrl ? null : new CaptionCollector({ source, store, WebSocketClass,
@@ -246,7 +246,7 @@ if (location.hostname === ${JSON.stringify(gaHostname)}) {
             if (!event(response, 'caption', item, item.cursor)) break;
           }
         }
-        event(response, 'status', channelManager?.collectors.get(channel.id)?.state ?? collector?.state ?? { state: 'stopped' });
+        event(response, 'status', { state: channelManager?.collectors.get(channel.id)?.state.state ?? collector?.state.state ?? 'stopped' });
         response.on('close', () => {
           subscribers.delete(sub);
           if (!subscribers.size && heartbeat) { clearInterval(heartbeat); heartbeat = null; }
