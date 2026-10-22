@@ -1,6 +1,7 @@
 {
   "name": "assembly-live-captions",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "국회 위원회 생중계 자막 수집·조회 및 오디오 재생 웹 서비스",
   "homepage": "https://soju.day",
   "repository": {
