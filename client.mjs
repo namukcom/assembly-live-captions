@@ -421,7 +421,7 @@ async function refreshChannels(manual = false) {
       const data = await getJson(manual ? '/api/channels?refresh=1' : '/api/channels');
       const wasOnAir = isLiveChannel(selectedChannel());
       const previousCaptionReady = canReceiveCaptions(selectedChannel());
-      channels = [...data.channels].sort((left, right) =>
+      channels = data.channels.toSorted((left, right) =>
         Number(left.statusText?.trim() === '생중계 없음') - Number(right.statusText?.trim() === '생중계 없음'));
       const playable = channels.filter(isLiveChannel);
       const wantedId = channelId || preferredChannelId;

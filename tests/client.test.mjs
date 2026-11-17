@@ -351,9 +351,9 @@ test('다크테마·고정 레이아웃과 iPhone 형태의 자막·오디오 �
   assert.match(html, /id="refresh-channels"[^>]+aria-label="채널 새로고침"[^>]*><span class="refresh-icon"[^>]*>↻<\/span>/);
   assert.ok(html.indexOf('id="channel"') < html.indexOf('class="controls"'));
   assert.ok(html.includes('id="date"') && html.includes('class="switch-track"'));
-  assert.match(html, /<input id="connect" class="ios-toggle" type="checkbox" role="switch" checked/);
-  assert.match(html, /<input id="audio-toggle" class="ios-toggle" type="checkbox" role="switch"/);
-  assert.match(html, /<input id="video-toggle" class="ios-toggle" type="checkbox" role="switch"/);
+  assert.match(html, /<input id="connect" class="ios-toggle" type="checkbox" switch role="switch" checked/);
+  assert.match(html, /<input id="audio-toggle" class="ios-toggle" type="checkbox" switch role="switch"/);
+  assert.match(html, /<input id="video-toggle" class="ios-toggle" type="checkbox" switch role="switch"/);
   assert.match(html, /id="video-options"[^>]*hidden/);
   assert.ok(html.match(/<section class="channel-bar"[\s\S]*?<\/section>/)[0].includes('id="date"'));
   const settings = html.match(/<div id="toolbar-settings"[\s\S]*?<\/div>/)[0];
