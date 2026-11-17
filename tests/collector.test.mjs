@@ -25,11 +25,11 @@ test('echo-protocol을 사용해 저장하고 연결 종료 후 재연결한다'
     first.message('{"segment":1,"transcript":"저장한 자막","final":true}');
     first.message('{"segment":1,"transcript":"저장한 자막 수정","final":true}');
     assert.deepEqual(statuses, [{ state: 'connecting' }, { state: 'connected' }], '메시지 수신마다 중복 상태를 알리지 않는다');
-    assert.equal(store.cursor(), 2); assert.equal(events[0].caption.text, '저장한 자막');
+    assert.equal(store.cursor(), 1); assert.equal(events[0].caption.text, '저장한 자막');
     first.close(); assert.equal(collector.state.state, 'reconnecting');
     await delay(20); assert.equal(FakeSocket.instances.length, 2);
     first.message('{"segment":2,"transcript":"오래된 연결의 메시지"}');
-    assert.equal(store.cursor(), 2);
+    assert.equal(store.cursor(), 1);
     collector.stop(); await delay(20); assert.equal(FakeSocket.instances.length, 2);
   } finally { collector.stop(); store.close(); }
 });

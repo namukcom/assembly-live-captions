@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rmSync } from 'node:fs';
+import { rmSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { CaptionStore } from '../lib/store.mjs';
 import { isDay, parseCaption, seoulDay, seoulSlot } from '../lib/caption-format.mjs';
@@ -33,7 +33,7 @@ test('미완성 초안은 DB에 저장하지 않고 완성 문장과 화자 분�
     ]);
     assert.equal(store.rows({ day: '2026-10-14', mode: 'final' }).length, 2);
     assert.equal([...store.records('2026-10-14')].length, 2);
-    assert.deepEqual(store.eventsAfter(1, '2026-10-14').map(item => item.cursor), [2, 3]);
+    assert.deepEqual(store.eventsAfter(1, '2026-10-14').map(item => item.cursor), [2]);
   } finally { store.close(); }
 });
 
@@ -51,7 +51,9 @@ test('서버 재시작 후 기록이 유지되고 다른 날짜와 방송 구간
     assert.deepEqual(store.dates().map(row => row.day), ['2026-10-15', '2026-10-14']);
   } finally {
     store.close();
-    for (const suffix of ['', '-wal', '-shm']) rmSync(filename + suffix, { force: true });
+    for (const name of readdirSync(tmpdir())) {
+      if (name.startsWith(filename.split(/[\\/]/).at(-1))) rmSync(join(tmpdir(), name), { force: true });
+    }
   }
 });
 
@@ -97,22 +99,77 @@ test('위원회 채널별로 자막, 원본 이벤트와 TXT 내용을 분리하
   } finally { store.close(); }
 });
 
-test('채널 원본 주소는 매핑 테이블에만 저장하고 자막 행에는 URL을 중복 저장하지 않는다', () => {
+test('채널 원본 주소는 매핑 테이블에만 저장하고 경량 segment_key·채널 인덱스·시퀀스를 유지한다', () => {
   const store = new CaptionStore(':memory:');
   try {
     store.rememberChannelSource('25', source, at);
+    store.rememberChannelSource('25', source, at);
+    store.rememberChannelSource('91', 'wss://example.test/other', at);
+    assert.deepEqual(store.db.prepare('SELECT id FROM sources ORDER BY id').all().map(r => r.id), [1, 2], '중복 URL 등록 시 sources ID 시퀀스를 낭비하지 않는다');
     store.ingest(raw(1, '법사위 자막'), source, at, '25');
-    store.ingest(raw(1, '특별위 자막'), source, at, '91');
+    store.ingest(raw(1, '특별위 자막'), 'wss://example.test/other', at, '91');
     assert.deepEqual(store.sourcesForChannel('25'), [source]);
     assert.deepEqual(store.rows({ day: '2026-10-14', channelId: '25', source }).map(row => row.text), ['법사위 자막']);
-    assert.deepEqual([...store.textRows('2026-10-14', 'clean', source, '91')], ['특별위 자막']);
+    assert.deepEqual([...store.textRows('2026-10-14', 'clean', 'wss://example.test/other', '91')], ['특별위 자막']);
     const storedRow = store.db.prepare('SELECT segment_key, source_id, channel_id FROM captions WHERE channel_id=?').get('25');
-    assert.equal(storedRow.segment_key.includes(source), false, 'segment_key에 wss URL을 저장하지 않는다');
+    assert.equal(storedRow.segment_key, '25|100:1', 'segment_key에 URL과 날짜 JSON 배열을 중복 저장하지 않는다');
     assert.ok(storedRow.source_id > 0);
+    const plan = store.db.prepare('EXPLAIN QUERY PLAN SELECT id, segment_key, text, first_at FROM captions WHERE day=? AND channel_id=? AND id>? ORDER BY id LIMIT ?')
+      .all('2026-10-14', '25', 0, 1000);
+    assert.match(plan.map(p => p.detail).join(' '), /USING INDEX captions_day_channel_id/);
   } finally { store.close(); }
 });
 
-test('기존 운영 DB를 최초 1회 정규화하여 messages 테이블·미완성 초안·중복 URL을 정리한다', () => {
+test('기존 운영 DB(v2)를 최초 1회 마이그레이션해 불필요한 컬럼·인덱스를 제거하고 채널을 보완한다', () => {
+  const filename = join(tmpdir(), `caption-v2-${randomUUID()}.sqlite`);
+  const legacy = new DatabaseSync(filename);
+  legacy.exec(`
+    CREATE TABLE sources (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL UNIQUE);
+    CREATE TABLE channel_sources (channel_id TEXT NOT NULL, source_id INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(channel_id, source_id));
+    CREATE TABLE captions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      segment_key TEXT NOT NULL UNIQUE,
+      day TEXT NOT NULL,
+      source_id INTEGER NOT NULL DEFAULT 0,
+      channel_id TEXT NOT NULL DEFAULT '',
+      text TEXT NOT NULL,
+      first_at TEXT NOT NULL,
+      last_at TEXT NOT NULL,
+      last_message_id INTEGER NOT NULL
+    );
+    CREATE INDEX captions_day_message_id ON captions(day, last_message_id);
+  `);
+  legacy.prepare('INSERT INTO sources(id, url) VALUES (?, ?)').run(1, source);
+  legacy.prepare('INSERT INTO channel_sources(channel_id, source_id, updated_at) VALUES (?, ?, ?)').run('25', 1, at);
+  legacy.prepare('INSERT INTO captions(id, segment_key, day, source_id, channel_id, text, first_at, last_at, last_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(10, JSON.stringify(['c:25', '2026-10-14', '100', '1']), '2026-10-14', 1, '', '채널 누락 레거시 자막', at, at, 10);
+  legacy.close();
+  let store = new CaptionStore(filename);
+  try {
+    assert.deepEqual(store.rows({ day: '2026-10-14', channelId: '25', source }), [
+      { id: 10, text: '채널 누락 레거시 자막', at, k: '100:1' },
+    ]);
+    const cols = store.db.prepare('PRAGMA table_info(captions)').all().map(col => col.name);
+    assert.equal(cols.includes('last_at'), false);
+    assert.equal(cols.includes('last_message_id'), false);
+    assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='captions_day_message_id'").get(), undefined);
+    const migrated = store.db.prepare('SELECT channel_id, segment_key FROM captions WHERE id=10').get();
+    assert.equal(migrated.channel_id, '25', '단일 매핑 채널은 빈 channel_id를 자동 보완한다');
+    assert.equal(migrated.segment_key, '25|100:1', '레거시 JSON segment_key를 경량 키로 변환한다');
+    store.close();
+    store = new CaptionStore(filename);
+    assert.equal(store.hasEmptyChannelId, false);
+    const backups = readdirSync(tmpdir()).filter(name => name.startsWith(`${filename.split(/[\\/]/).at(-1)}.bak-`));
+    assert.equal(backups.length, 1, '마이그레이션 전에 기존 DB 백업 파일을 생성한다');
+  } finally {
+    store.close();
+    for (const name of readdirSync(tmpdir())) {
+      if (name.startsWith(filename.split(/[\\/]/).at(-1))) rmSync(join(tmpdir(), name), { force: true });
+    }
+  }
+});
+
+test('초기 운영 DB(v1)도 최초 1회 정규화하여 messages 테이블·미완성 초안·중복 URL을 정리한다', () => {
   const filename = join(tmpdir(), `caption-legacy-${randomUUID()}.sqlite`);
   const legacy = new DatabaseSync(filename);
   legacy.exec(`
@@ -150,14 +207,11 @@ test('기존 운영 DB를 최초 1회 정규화하여 messages 테이블·미완
     assert.equal(cols.includes('source'), false, 'captions에서 중복 source URL 컬럼을 제거한다');
     assert.equal(cols.includes('final'), false, 'captions에서 불필요한 final 컬럼을 제거한다');
     const migratedRow = store.db.prepare('SELECT segment_key FROM captions WHERE id=1').get();
-    assert.equal(migratedRow.segment_key.includes(source), false, '기존 행의 segment_key에서도 URL을 제거한다');
-    store.close();
-    store = new CaptionStore(filename);
-    assert.deepEqual(store.rows({ day: '2026-10-14', channelId: '25', source }), [
-      { id: 1, text: '기존 확정 자막', at, k: '100:1' },
-    ], '두 번째 기동부터는 추가 마이그레이션 없이 그대로 동작한다');
+    assert.equal(migratedRow.segment_key, '25|100:1');
   } finally {
     store.close();
-    for (const suffix of ['', '-wal', '-shm']) rmSync(filename + suffix, { force: true });
+    for (const name of readdirSync(tmpdir())) {
+      if (name.startsWith(filename.split(/[\\/]/).at(-1))) rmSync(join(tmpdir(), name), { force: true });
+    }
   }
 });

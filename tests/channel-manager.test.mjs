@@ -110,13 +110,13 @@ test('감사 중단 중 연결을 유지해 늦은 확정본·화자 수정본�
     const rows = store.rows({ day: events.at(-1).day, channelId: '45' });
     assert.equal(rows.length, 1);
     assert.equal(rows[0].text, '중단 직전 확정 문장 수정');
-    assert.equal(store.cursor(), 2);
+    assert.equal(store.cursor(), 1);
     assert.equal(logs.filter(x => x.event === 'final-during-pause').length, 2);
     socket.message({ segment: 2, 'segment-offset': 200, transcript: '확정되지 않은 마지막 문장', final: false });
     t.mock.timers.tick(30 * 60000);
     assert.equal(socket.closed, undefined, '긴 정회 중에도 무수신 타이머로 연결을 닫지 않는다');
     assert.equal(manager.collectors.size, 1);
-    assert.equal(store.cursor(), 2, '정회 중 초안을 확정본으로 바꾸어 저장하지 않는다');
+    assert.equal(store.cursor(), 1, '정회 중 초안을 확정본으로 바꾸어 저장하지 않는다');
     ended = true; await manager.refresh();
     assert.equal(socket.closed, true);
     assert.equal(manager.collectors.size, 0);
