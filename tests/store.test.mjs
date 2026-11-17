@@ -57,6 +57,29 @@ test('서버 재시작 후 기록이 유지되고 다른 날짜와 방송 구간
   }
 });
 
+test('위원회 이름과 날짜별 회의 안건 제목을 정규화해 저장하고 중복 쓰기를 방지한다', () => {
+  const store = new CaptionStore(':memory:');
+  try {
+    store.rememberChannelMeta({ channelId: '60', name: '행안위', fullName: '행정안전위원회',
+      subject: '행정안전위원회 국정감사(부산광역시) [10:00]', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T01:00:00.000Z' });
+    store.rememberChannelMeta({ channelId: '60', name: '행안위', fullName: '',
+      subject: '행정안전위원회 국정감사(부산광역시)', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T01:01:00.000Z' });
+    store.rememberChannelMeta({ channelId: '60', name: '행안위',
+      subject: '행정안전위원회 국정감사(부산경찰청) [14:30]', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T05:30:00.000Z' });
+    store.rememberChannelMeta({ channelId: '33', name: '복지위', subject: '', scheduleCode: '', scheduled: false, at: '2026-10-21T01:00:00.000Z' });
+    const channels = store.db.prepare('SELECT channel_id, name, full_name FROM channels ORDER BY channel_id').all().map(r => ({ ...r }));
+    assert.deepEqual(channels, [
+      { channel_id: '33', name: '복지위', full_name: '' },
+      { channel_id: '60', name: '행안위', full_name: '행정안전위원회' },
+    ]);
+    const meetings = store.db.prepare('SELECT day, channel_id, schedule_code, subject FROM channel_meetings ORDER BY id').all().map(r => ({ ...r }));
+    assert.deepEqual(meetings, [
+      { day: '2026-10-21', channel_id: '60', schedule_code: 'DCM60', subject: '행정안전위원회 국정감사(부산광역시)' },
+      { day: '2026-10-21', channel_id: '60', schedule_code: 'DCM60', subject: '행정안전위원회 국정감사(부산경찰청)' },
+    ]);
+  } finally { store.close(); }
+});
+
 test('빈 자막, 제어 메시지, 미완성 초안은 DB에 저장하지 않는다', () => {
   const store = new CaptionStore(':memory:');
   try {
@@ -169,6 +192,29 @@ test('기존 운영 DB(v2)를 최초 1회 마이그레이션해 불필요한 컬
   }
 });
 
+test('위원회 이름과 날짜별 회의 안건 제목을 정규화해 저장하고 중복 쓰기를 방지한다', () => {
+  const store = new CaptionStore(':memory:');
+  try {
+    store.rememberChannelMeta({ channelId: '60', name: '행안위', fullName: '행정안전위원회',
+      subject: '행정안전위원회 국정감사(부산광역시) [10:00]', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T01:00:00.000Z' });
+    store.rememberChannelMeta({ channelId: '60', name: '행안위', fullName: '',
+      subject: '행정안전위원회 국정감사(부산광역시)', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T01:01:00.000Z' });
+    store.rememberChannelMeta({ channelId: '60', name: '행안위',
+      subject: '행정안전위원회 국정감사(부산경찰청) [14:30]', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T05:30:00.000Z' });
+    store.rememberChannelMeta({ channelId: '33', name: '복지위', subject: '', scheduleCode: '', scheduled: false, at: '2026-10-21T01:00:00.000Z' });
+    const channels = store.db.prepare('SELECT channel_id, name, full_name FROM channels ORDER BY channel_id').all().map(r => ({ ...r }));
+    assert.deepEqual(channels, [
+      { channel_id: '33', name: '복지위', full_name: '' },
+      { channel_id: '60', name: '행안위', full_name: '행정안전위원회' },
+    ]);
+    const meetings = store.db.prepare('SELECT day, channel_id, schedule_code, subject FROM channel_meetings ORDER BY id').all().map(r => ({ ...r }));
+    assert.deepEqual(meetings, [
+      { day: '2026-10-21', channel_id: '60', schedule_code: 'DCM60', subject: '행정안전위원회 국정감사(부산광역시)' },
+      { day: '2026-10-21', channel_id: '60', schedule_code: 'DCM60', subject: '행정안전위원회 국정감사(부산경찰청)' },
+    ]);
+  } finally { store.close(); }
+});
+
 test('초기 운영 DB(v1)도 최초 1회 정규화하여 messages 테이블·미완성 초안·중복 URL을 정리한다', () => {
   const filename = join(tmpdir(), `caption-legacy-${randomUUID()}.sqlite`);
   const legacy = new DatabaseSync(filename);
@@ -214,4 +260,27 @@ test('초기 운영 DB(v1)도 최초 1회 정규화하여 messages 테이블·�
       if (name.startsWith(filename.split(/[\\/]/).at(-1))) rmSync(join(tmpdir(), name), { force: true });
     }
   }
+});
+
+test('위원회 이름과 날짜별 회의 안건 제목을 정규화해 저장하고 중복 쓰기를 방지한다', () => {
+  const store = new CaptionStore(':memory:');
+  try {
+    store.rememberChannelMeta({ channelId: '60', name: '행안위', fullName: '행정안전위원회',
+      subject: '행정안전위원회 국정감사(부산광역시) [10:00]', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T01:00:00.000Z' });
+    store.rememberChannelMeta({ channelId: '60', name: '행안위', fullName: '',
+      subject: '행정안전위원회 국정감사(부산광역시)', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T01:01:00.000Z' });
+    store.rememberChannelMeta({ channelId: '60', name: '행안위',
+      subject: '행정안전위원회 국정감사(부산경찰청) [14:30]', scheduleCode: 'DCM60', scheduled: true, at: '2026-10-21T05:30:00.000Z' });
+    store.rememberChannelMeta({ channelId: '33', name: '복지위', subject: '', scheduleCode: '', scheduled: false, at: '2026-10-21T01:00:00.000Z' });
+    const channels = store.db.prepare('SELECT channel_id, name, full_name FROM channels ORDER BY channel_id').all().map(r => ({ ...r }));
+    assert.deepEqual(channels, [
+      { channel_id: '33', name: '복지위', full_name: '' },
+      { channel_id: '60', name: '행안위', full_name: '행정안전위원회' },
+    ]);
+    const meetings = store.db.prepare('SELECT day, channel_id, schedule_code, subject FROM channel_meetings ORDER BY id').all().map(r => ({ ...r }));
+    assert.deepEqual(meetings, [
+      { day: '2026-10-21', channel_id: '60', schedule_code: 'DCM60', subject: '행정안전위원회 국정감사(부산광역시)' },
+      { day: '2026-10-21', channel_id: '60', schedule_code: 'DCM60', subject: '행정안전위원회 국정감사(부산경찰청)' },
+    ]);
+  } finally { store.close(); }
 });

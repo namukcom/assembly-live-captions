@@ -163,5 +163,12 @@ test('중단된 채널의 주소를 다른 생방송 채널이 쓰면 이전 채
     assert.equal(FakeSocket.instances[0].closed, true);
     assert.equal(manager.collectors.has('45'), false);
     assert.equal(manager.collectors.has('33'), true);
+    const savedChannels = store.db.prepare('SELECT channel_id, name, full_name FROM channels ORDER BY channel_id').all().map(r => ({ ...r }));
+    assert.deepEqual(savedChannels, [
+      { channel_id: '33', name: '복지위', full_name: '행정안전위원회' },
+      { channel_id: '45', name: '행안위', full_name: '행정안전위원회' },
+    ]);
+    const savedMeetings = store.db.prepare('SELECT channel_id, schedule_code, subject FROM channel_meetings ORDER BY id').all().map(r => ({ ...r }));
+    assert.ok(savedMeetings.some(m => m.channel_id === '45' && m.schedule_code === 'DCM45' && m.subject === '감사'));
   } finally { manager.stop(); store.close(); }
 });
